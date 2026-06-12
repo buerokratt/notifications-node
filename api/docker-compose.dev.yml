@@ -1,29 +1,29 @@
-name: buerokratt-notification-node
+name: buerokratt-notification-node-dev
 
 services:
   api:
-    container_name: buerokratt-notification-node
+    container_name: buerokratt-notification-node-dev
     platform: linux/amd64
     build:
       context: .
-      dockerfile: Dockerfile
-      target: production
-    image: buerokratt-notification-node:latest
+      dockerfile: Dockerfile.dev
+    image: buerokratt-notification-node:dev
     env_file:
-      - ./config/production.env
+      - ./config/development.env
     environment:
       RABBITMQ_URL: amqp://rabbitmq:5672?heartbeat=30
     depends_on:
       rabbitmq:
         condition: service_healthy
     ports:
-      - 3000:3000
+      - '3000:3000'
     restart: always
 
   rabbitmq:
-    image: 'rabbitmq:4.3.0-alpine'
+    image: 'rabbitmq:4.3-management-alpine'
     ports:
       - 5672:5672
+      - 15672:15672 # Management UI
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', 'ping']
       interval: 10s

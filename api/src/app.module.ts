@@ -4,8 +4,10 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
 import { appConfigFactory } from './app-config.factory';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { EventBusType } from './event/enums';
+import { EventModule } from './event/event.module';
+import { HealthModule } from './health/health.module';
+import { NotificationModule } from './notification/notification.module';
 
 @Module({
   imports: [
@@ -14,8 +16,9 @@ import { AppService } from './app.service';
       expandVariables: true,
     }),
     ConfigModule.forFeature(appConfigFactory),
+    EventModule.forRoot({ type: EventBusType.RabbitMQ }),
+    HealthModule,
+    NotificationModule,
   ],
-  controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}
