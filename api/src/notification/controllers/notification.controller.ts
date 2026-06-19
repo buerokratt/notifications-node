@@ -1,8 +1,25 @@
-import { Controller, MessageEvent, Query, Sse } from '@nestjs/common';
-import { ApiBadRequestResponse, ApiOkResponse, ApiOperation } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  MessageEvent,
+  Post,
+  Query,
+  Sse,
+} from '@nestjs/common';
+import {
+  ApiAcceptedResponse,
+  ApiBadRequestResponse,
+  ApiOkResponse,
+  ApiOperation,
+} from '@nestjs/swagger';
 import { Observable } from 'rxjs';
 
-import { NotificationEventsQueryDto } from '../dtos';
+import {
+  CreateNotificationEventBodyDto,
+  NotificationEventsQueryDto,
+} from '../dtos';
 import { NotificationService } from '../services';
 
 @Controller({ version: '1', path: '/notifications' })
@@ -19,5 +36,20 @@ export class NotificationController {
   })
   public subscribeToEvents(@Query() query: NotificationEventsQueryDto): Observable<MessageEvent> {
     return this.notificationService.getEventSse(query);
+  }
+
+  @Post('/events')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Publish a notification event' })
+  @ApiAcceptedResponse({
+    description: 'Notification event was accepted by RabbitMQ',
+  })
+  @ApiBadRequestResponse({
+    description: 'Invalid notification event envelope',
+  })
+  public async publishNotificationEvent(
+    @Body() body: CreateNotificationEventBodyDto,
+  ): Promise<void> {
+    await this.notificationService.publishNotificationEvent(body);
   }
 }

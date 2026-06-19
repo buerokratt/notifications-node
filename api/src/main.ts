@@ -40,4 +40,5 @@ async function bootstrap() {
 
   await app.listen(apiConfig.port ?? 3000);
 }
+
 bootstrap();

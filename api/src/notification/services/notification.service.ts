@@ -1,11 +1,17 @@
-import { Injectable, Logger, MessageEvent } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  MessageEvent,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { interval, map, merge, Observable, of, Subject } from 'rxjs';
 
+import { NotificationRecipient } from '../../rabbitmq/enums';
 import { RabbitmqService } from '../../rabbitmq/services';
 import type { RabbitmqNotificationEvent } from '../../rabbitmq/types';
 import { NOTIFICATION_RECEIVED_EVENT } from '../../shared/shared.constants';
-import { NotificationEventsQueryDto } from '../dtos';
+import { CreateNotificationEventBodyDto, NotificationEventsQueryDto } from '../dtos';
 import { SSE_HEARTBEAT_EVENT_TYPE, SSE_HEARTBEAT_INTERVAL_MS } from '../notification.constants';
 
 @Injectable()
@@ -22,13 +28,32 @@ export class NotificationService {
 
   constructor(private readonly rabbitmqService: RabbitmqService) {}
 
+  public async publishNotificationEvent(
+    body: CreateNotificationEventBodyDto,
+  ): Promise<void> {
+    try {
+      await this.rabbitmqService.publishEvent({
+        eventUuid: body.eventUuid,
+        recipient: body.recipient,
+        ...(body.recipient === NotificationRecipient.Chat
+          ? { recipientUuid: body.recipientUuid }
+          : {}),
+        type: body.type,
+        payload: body.payload,
+      });
+    } catch (error) {
+      this.logger.error('Failed to publish RabbitMQ notification event', error);
+      throw new ServiceUnavailableException('RabbitMQ publishing unavailable');
+    }
+  }
+
   public getEventSse(query: NotificationEventsQueryDto): Observable<MessageEvent> {
     const chatUuids = [...new Set(query.chatUuid)];
     chatUuids.forEach((chatUuid) => this.addChatEventStreamSubscriber(chatUuid));
     void Promise.all(
       chatUuids.map((chatUuid) =>
         this.rabbitmqService.bindChannel({
-          target: 'CHAT',
+          recipient: 'CHAT',
           channelId: chatUuid,
         }),
       ),
@@ -63,21 +88,41 @@ export class NotificationService {
     const message: MessageEvent = {
       type: event.type,
       data: {
+        eventUuid: event.eventUuid,
+        recipient: event.recipient,
+        ...(event.recipientUuid ? { recipientUuid: event.recipientUuid } : {}),
+        type: event.type,
         payload: event.payload,
       },
     };
 
-    const chatUuid = event.chatUuid;
+    switch (event.recipient) {
+      case NotificationRecipient.Global: {
+        this.globalEventStream.next(message);
+        return;
+      }
+      case NotificationRecipient.Chat: {
+        if (!event.recipientUuid) {
+          return this.logger.warn(
+            `Skipping ${event.type} notification event because recipientUuid is missing`,
+          );
+        }
 
-    if (!chatUuid) {
-      this.globalEventStream.next(message);
-      return;
+        const chatEventStreamState = this.chatEventStreams.get(
+          event.recipientUuid,
+        );
+        if (!chatEventStreamState) return;
+
+        chatEventStreamState.eventStream.next(message);
+        return;
+      }
+      default: {
+        this.logger.warn(
+          `Received notification event with unknown recipient: ${event.recipient}`,
+        );
+        throw new Error(`Unknown notification recipient: ${event.recipient}`);
+      }
     }
-
-    const chatEventStreamState = this.chatEventStreams.get(chatUuid);
-    if (!chatEventStreamState) return;
-
-    chatEventStreamState.eventStream.next(message);
   }
 
   private addChatEventStreamSubscriber(chatUuid: string): void {
@@ -114,7 +159,7 @@ export class NotificationService {
       chatEventStreamState.eventStream.complete();
       this.chatEventStreams.delete(chatUuid);
       await this.rabbitmqService.unbindChannel({
-        target: 'CHAT',
+        recipient: 'CHAT',
         channelId: chatUuid,
       });
     }

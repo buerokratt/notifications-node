@@ -1,1 +1,1 @@
-export * from './notification-target.enum';
+export * from './notification-recipient.enum';

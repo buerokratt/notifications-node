@@ -1,4 +1,4 @@
-export enum NotificationTarget {
+export enum NotificationRecipient {
   Global = 'GLOBAL',
   Chat = 'CHAT',
 }
