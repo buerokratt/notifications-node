@@ -1,12 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsDefined,
-  IsEnum,
-  IsNotEmpty,
-  IsObject,
-  IsString,
-  IsUUID,
-} from 'class-validator';
+import { IsDefined, IsEnum, IsNotEmpty, IsObject, IsString, IsUUID } from 'class-validator';
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { IsValidNotificationRecipientUuid } from '../validators';
@@ -23,8 +16,7 @@ export class CreateNotificationEventBodyDto {
 
   @IsValidNotificationRecipientUuid(['CHAT'])
   @ApiPropertyOptional({
-    description:
-      'The UUID of the recipient chat. Required for CHAT events and omitted for GLOBAL events.',
+    description: 'The UUID of the recipient chat. Required for CHAT events and omitted for GLOBAL events.',
     format: 'uuid',
     example: '6e5ad6e1-570c-4f69-99e6-ab6f28c2f8c5',
   })

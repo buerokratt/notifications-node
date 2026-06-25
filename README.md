@@ -7,13 +7,13 @@
 The API exposes a server-sent events endpoint for browser clients:
 
 ```http
-GET /v1/notifications/events?chatUuid=<chatUuid>
+GET /public/v1/notifications/events?chatUuid=<chatUuid>
 ```
 
 Multiple chats can be subscribed to with repeated query values:
 
 ```http
-GET /v1/notifications/events?chatUuid=<chatUuid>&chatUuid=<anotherChatUuid>
+GET /public/v1/notifications/events?chatUuid=<chatUuid>&chatUuid=<anotherChatUuid>
 ```
 
 The endpoint currently sends:
@@ -25,7 +25,7 @@ It does not send a separate `connected` event.
 
 ```mermaid
 flowchart TD
-  Client[Browser SSE client] -->|GET /v1/notifications/events?chatUuid=...| Controller[NotificationController]
+  Client[Browser SSE client] -->|GET /public/v1/notifications/events?chatUuid=...| Controller[PublicNotificationsController]
   Controller --> Service[NotificationService]
 
   Service -->|first local subscriber for chat| Bind[RabbitMQ bind channel.chat.chatUuid]
@@ -98,7 +98,8 @@ docker compose -f docker-compose.dev.yml up --build
 
 This starts:
 
-- API on `http://localhost:3000`
+- Public API on `http://localhost:3000`
+- Private API on `http://localhost:3001`
 - RabbitMQ AMQP on `localhost:5672`
 - RabbitMQ Management UI on `http://127.0.0.1:15672`
 
@@ -137,7 +138,7 @@ RABBITMQ_URL=amqp://rabbitmq:5672
 To open an SSE connection locally:
 
 ```sh
-curl -N "http://127.0.0.1:3000/v1/notifications/events?chatUuid=dee9c8da-2b40-4c6a-a31e-db278b6960b1"
+curl -N "http://127.0.0.1:3000/public/v1/notifications/events?chatUuid=dee9c8da-2b40-4c6a-a31e-db278b6960b1"
 ```
 
 The stream should emit periodic `heartbeat` events while connected. Real
@@ -170,3 +171,92 @@ RABBITMQ_URL=amqp://guest:guest@127.0.0.1:5672?vhost=my-vhost&heartbeat=30
 
 This controls the RabbitMQ AMQP connection heartbeat. It is separate from SSE
 heartbeat events sent to browser clients.
+
+---
+
+## Public and private apps
+
+The service starts two Nest applications from the same `main.ts` process. Each
+application is registered from the same `AppModule` with the same environment
+file and shared health/config setup, but the public and private HTTP surfaces
+are intentionally separated by app type and route prefix.
+
+```mermaid
+flowchart TD
+  Main[main.ts bootstrap] --> AppModule[AppModule.register app type]
+  AppModule --> PublicApp[Public app]
+  AppModule --> PrivateApp[Private app]
+
+  PublicApp --> PublicPrefix[Global prefix: /public]
+  PrivateApp --> PrivatePrefix[Global prefix: /private]
+
+  PublicApp --> PublicNotifications[PublicNotificationsModule]
+  PublicNotifications --> PublicController[PublicNotificationsController]
+  PublicController -->|GET /public/v1/notifications/events| SseClients[Browser SSE clients]
+
+  PrivateApp --> PrivateNotifications[PrivateNotificationsModule]
+  PrivateNotifications --> PrivateController[PrivateNotificationsController]
+  PrivateController -->|POST /private/v1/notifications/events| Publishers[Internal publishers]
+
+  PublicNotifications --> NotificationModule[NotificationModule]
+  PrivateNotifications --> NotificationModule
+  NotificationModule --> PublicRabbit[RabbitmqModule]
+  NotificationModule --> PrivateRabbit[RabbitmqModule]
+  PublicRabbit --> Exchange[RabbitMQ topic exchange]
+  PrivateRabbit --> Exchange
+
+  Exchange --> PublicService[NotificationService in public app]
+  PublicService --> SseClients
+
+  PublicApp --> HealthPublic[/GET /health/]
+  PrivateApp --> HealthPrivate[/GET /health/]
+```
+
+### Public app
+
+The public app listens on `API_PORT_PUBLIC` or `3000` when the variable is not
+set. Its routes are prefixed with `/public`, except `/health`, which is excluded
+from the global prefix.
+
+The public notification endpoint is:
+
+```http
+GET /public/v1/notifications/events?chatUuid=<chatUuid>
+```
+
+This endpoint accepts one or more `chatUuid` query parameters, opens an SSE
+stream, emits heartbeat events, binds the local RabbitMQ queue to each requested
+chat routing key, and fans matching notification events out to the connected
+client.
+
+### Private app
+
+The private app listens on `API_PORT_PRIVATE` or `3001` when the variable is not
+set. Its routes are prefixed with `/private`, except `/health`, which is excluded
+from the global prefix.
+
+The private notification endpoint is:
+
+```http
+POST /private/v1/notifications/events
+```
+
+Internal publishers post notification envelopes to this endpoint. The private
+app validates the body and publishes accepted events to RabbitMQ. `GLOBAL`
+events are published with the `global` routing key, while `CHAT` events require
+`recipientUuid` and are published with `channel.chat.<recipientUuid>`.
+
+## Environment variables
+
+The API loads `api/config/<NODE_ENV>.env` and also reads process environment
+values. `NODE_ENV` defaults to `development` when it is not set.
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `API_CORS_ORIGIN` | Required | CORS origin value passed to `enableCors`; comma-separated values are treated as multiple allowed origins. |
+| `API_DOCUMENTATION_ENABLED` | Required | Boolean flag that enables Swagger documentation at `/documentation` on each app. |
+| `API_PORT_PUBLIC` | Optional | Port for the public app; defaults to `3000`. |
+| `API_PORT_PRIVATE` | Optional | Port for the private app; defaults to `3001`. |
+| `RABBITMQ_URL` | Required | AMQP/AMQPS connection URL used by RabbitMQ clients; can include query options such as `heartbeat=30`. |
+| `RABBITMQ_PREFIX` | Optional | Prefix for RabbitMQ exchange and queue names, useful for separating environments. |
+| `NODE_ENV` | Optional | Selects the config file from `api/config/<NODE_ENV>.env`; defaults to `development`. |

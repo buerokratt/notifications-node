@@ -1,9 +1,4 @@
-import {
-  isUUID,
-  IsUUIDVersion,
-  ValidateBy,
-  ValidationArguments,
-} from 'class-validator';
+import { isUUID, IsUUIDVersion, ValidateBy, ValidationArguments } from 'class-validator';
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { CreateNotificationEventBodyDto } from '../dtos';

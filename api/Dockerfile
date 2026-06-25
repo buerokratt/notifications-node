@@ -23,5 +23,5 @@ ENV NODE_ENV=production
 COPY --from=dependencies /api/node_modules ./node_modules
 COPY --from=build /api/dist ./dist
 COPY package.json ./
-EXPOSE 3000
+EXPOSE 3000 3001
 CMD ["pnpm", "run", "start:prod"]

@@ -119,9 +119,7 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
 
   public isHealthy(): HealthIndicatorResult {
     const indicator = this.healthIndicatorService.check(RABBITMQ_HEALTH_KEY);
-    const isConnected = Boolean(
-      this.client && this.consumerChannel && this.publisherChannel,
-    );
+    const isConnected = Boolean(this.client && this.consumerChannel && this.publisherChannel);
 
     return isConnected ? indicator.up() : indicator.down();
   }
@@ -171,31 +169,21 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     this.logger.log(`Connected to RabbitMQ | Exchange: ${this.exchangeName} | Queue: ${this.queueName}`);
   }
 
-  private async publish(
-    routingKey: string,
-    event: RabbitmqNotificationEvent,
-  ): Promise<void> {
+  private async publish(routingKey: string, event: RabbitmqNotificationEvent): Promise<void> {
     if (!this.client || !this.publisherChannel) {
       throw new Error('RabbitMQ publisher channel has not been initialized');
     }
 
     const publisherChannel = this.publisherChannel;
-    const published = publisherChannel.publish(
-      this.exchangeName,
-      routingKey,
-      Buffer.from(JSON.stringify(event)),
-      {
-        contentType: 'application/json',
-        messageId: event.eventUuid,
-        persistent: false,
-        timestamp: Date.now(),
-      },
-    );
+    const published = publisherChannel.publish(this.exchangeName, routingKey, Buffer.from(JSON.stringify(event)), {
+      contentType: 'application/json',
+      messageId: event.eventUuid,
+      persistent: false,
+      timestamp: Date.now(),
+    });
 
     if (!published) {
-      this.logger.warn(
-        `RabbitMQ publish buffer is full. Routing key: ${routingKey}`,
-      );
+      this.logger.warn(`RabbitMQ publish buffer is full. Routing key: ${routingKey}`);
       await once(publisherChannel, 'drain');
     }
 
@@ -273,18 +261,13 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
           readonly recipient: `${NotificationRecipient.Global}`;
         }
       | {
-          readonly recipient: Exclude<
-            `${NotificationRecipient}`,
-            `${NotificationRecipient.Global}`
-          >;
+          readonly recipient: Exclude<`${NotificationRecipient}`, `${NotificationRecipient.Global}`>;
           readonly channelId: string;
         },
   ): string {
     return [
       args.recipient.toLowerCase(),
-      ...(args.recipient === NotificationRecipient.Global
-        ? []
-        : [args.channelId]),
+      ...(args.recipient === NotificationRecipient.Global ? [] : [args.channelId]),
     ].join(RABBITMQ_NAME_SEPARATOR);
   }
 }

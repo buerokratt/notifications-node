@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  MessageEvent,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { Injectable, Logger, MessageEvent, ServiceUnavailableException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { interval, map, merge, Observable, of, Subject } from 'rxjs';
 
@@ -28,16 +23,12 @@ export class NotificationService {
 
   constructor(private readonly rabbitmqService: RabbitmqService) {}
 
-  public async publishNotificationEvent(
-    body: CreateNotificationEventBodyDto,
-  ): Promise<void> {
+  public async publishNotificationEvent(body: CreateNotificationEventBodyDto): Promise<void> {
     try {
       await this.rabbitmqService.publishEvent({
         eventUuid: body.eventUuid,
         recipient: body.recipient,
-        ...(body.recipient === NotificationRecipient.Chat
-          ? { recipientUuid: body.recipientUuid }
-          : {}),
+        ...(body.recipient === NotificationRecipient.Chat ? { recipientUuid: body.recipientUuid } : {}),
         type: body.type,
         payload: body.payload,
       });
@@ -47,19 +38,17 @@ export class NotificationService {
     }
   }
 
-  public getEventSse(query: NotificationEventsQueryDto): Observable<MessageEvent> {
+  public async getEventSse(query: NotificationEventsQueryDto): Promise<Observable<MessageEvent>> {
     const chatUuids = [...new Set(query.chatUuid)];
     chatUuids.forEach((chatUuid) => this.addChatEventStreamSubscriber(chatUuid));
-    void Promise.all(
+    await Promise.all(
       chatUuids.map((chatUuid) =>
         this.rabbitmqService.bindChannel({
           recipient: 'CHAT',
           channelId: chatUuid,
         }),
       ),
-    ).catch((error) => {
-      this.logger.error('Failed to bind RabbitMQ chat channels', error);
-    });
+    );
 
     return new Observable<MessageEvent>((subscriber) => {
       const streams = chatUuids
@@ -103,23 +92,17 @@ export class NotificationService {
       }
       case NotificationRecipient.Chat: {
         if (!event.recipientUuid) {
-          return this.logger.warn(
-            `Skipping ${event.type} notification event because recipientUuid is missing`,
-          );
+          return this.logger.warn(`Skipping ${event.type} notification event because recipientUuid is missing`);
         }
 
-        const chatEventStreamState = this.chatEventStreams.get(
-          event.recipientUuid,
-        );
+        const chatEventStreamState = this.chatEventStreams.get(event.recipientUuid);
         if (!chatEventStreamState) return;
 
         chatEventStreamState.eventStream.next(message);
         return;
       }
       default: {
-        this.logger.warn(
-          `Received notification event with unknown recipient: ${event.recipient}`,
-        );
+        this.logger.warn(`Received notification event with unknown recipient: ${event.recipient}`);
         throw new Error(`Unknown notification recipient: ${event.recipient}`);
       }
     }

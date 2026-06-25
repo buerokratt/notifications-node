@@ -5,5 +5,5 @@ export type RabbitmqNotificationEvent = {
   readonly recipient: NotificationRecipient;
   readonly recipientUuid?: string;
   readonly type: string;
-  readonly payload: object;
+  readonly payload: Record<string, unknown>;
 };

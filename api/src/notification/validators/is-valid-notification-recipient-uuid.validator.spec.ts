@@ -24,10 +24,7 @@ class ClassWithUuidVersion {
 class ClassWithMultipleRecipients {
   readonly recipient!: NotificationRecipient;
 
-  @IsValidNotificationRecipientUuid([
-    NotificationRecipient.Chat,
-    NotificationRecipient.Global,
-  ])
+  @IsValidNotificationRecipientUuid([NotificationRecipient.Chat, NotificationRecipient.Global])
   readonly recipientUuid?: string;
 }
 
@@ -44,9 +41,7 @@ describe('IsValidNotificationRecipientUuid', () => {
   });
 
   it('should reject a missing recipientUuid when recipient requires recipientUuid', async () => {
-    const errors = await validate(
-      plainToInstance(Class, { recipient: NotificationRecipient.Chat }),
-    );
+    const errors = await validate(plainToInstance(Class, { recipient: NotificationRecipient.Chat }));
 
     expect(errors).toHaveLength(1);
     expect(errors[0].constraints).toEqual({
@@ -102,15 +97,12 @@ describe('IsValidNotificationRecipientUuid', () => {
 
     expect(errors).toHaveLength(1);
     expect(errors[0].constraints).toEqual({
-      isValidNotificationRecipientUuid:
-        MULTIPLE_RECIPIENTS_UUID_REQUIRED_MESSAGE,
+      isValidNotificationRecipientUuid: MULTIPLE_RECIPIENTS_UUID_REQUIRED_MESSAGE,
     });
   });
 
   it('should allow an omitted recipientUuid when recipient does not require recipientUuid', async () => {
-    const errors = await validate(
-      plainToInstance(Class, { recipient: NotificationRecipient.Global }),
-    );
+    const errors = await validate(plainToInstance(Class, { recipient: NotificationRecipient.Global }));
 
     expect(errors).toHaveLength(0);
   });
@@ -125,8 +117,7 @@ describe('IsValidNotificationRecipientUuid', () => {
 
     expect(errors).toHaveLength(1);
     expect(errors[0].constraints).toEqual({
-      isValidNotificationRecipientUuid:
-        'recipientUuid must be omitted for this recipient',
+      isValidNotificationRecipientUuid: 'recipientUuid must be omitted for this recipient',
     });
   });
 });

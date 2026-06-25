@@ -9,7 +9,8 @@ export const appConfigFactory = registerAs('api', (): AppConfigSchema => {
   return ConfigUtil.validate(AppConfigSchema, {
     corsOrigin: split(<string>env['API_CORS_ORIGIN']),
     documentationEnabled: <string>env['API_DOCUMENTATION_ENABLED'],
-    port: <string>env['API_PORT'],
+    publicPort: <string>env['API_PORT_PUBLIC'],
+    privatePort: <string>env['API_PORT_PRIVATE'],
   });
 });
 

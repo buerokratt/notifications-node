@@ -15,5 +15,10 @@ export class AppConfigSchema {
   @IsNumber()
   @IsOptional()
   @Type(() => Number)
-  readonly port?: number;
+  readonly publicPort?: number;
+
+  @IsNumber()
+  @IsOptional()
+  @Type(() => Number)
+  readonly privatePort?: number;
 }

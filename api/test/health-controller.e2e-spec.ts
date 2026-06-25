@@ -1,52 +1,54 @@
-import {
-  ClassSerializerInterceptor,
-  HttpStatus,
-  INestApplication,
-  ValidationPipe,
-  VersioningType,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
+import { HttpStatus, INestApplication } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { vi } from 'vitest';
 
+import { configureApp } from './helpers';
 import { AppModule } from '../src/app.module';
+import { AppType } from '../src/enums';
 import { RabbitmqService } from '../src/rabbitmq/services';
 
 describe('HealthController (e2e)', () => {
   const HEALTH_ENDPOINT = '/health';
-  let app: INestApplication<App>;
-  let isHealthyMock: ReturnType<typeof vi.fn>;
-  let subscribeMock: ReturnType<typeof vi.fn>;
 
-  beforeEach(async () => {
-    isHealthyMock = vi.fn();
-    subscribeMock = vi.fn();
+  const appConfigs = [
+    {
+      name: AppType.Public,
+      appModule: AppModule.register(AppType.Public),
+    },
+    {
+      name: AppType.Private,
+      appModule: AppModule.register(AppType.Private),
+    },
+  ] as const;
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(RabbitmqService)
-      .useValue({ isHealthy: isHealthyMock, subscribe: subscribeMock })
-      .compile();
+  describe.each(appConfigs)('$name app (GET) /health', ({ appModule, name }) => {
+    let app: INestApplication<App>;
+    let isHealthyMock: ReturnType<typeof vi.fn>;
+    let subscribeMock: ReturnType<typeof vi.fn>;
 
-    app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
-    app.enableVersioning({ type: VersioningType.URI });
-    app.useGlobalInterceptors(
-      new ClassSerializerInterceptor(app.get(Reflector), {
-        excludeExtraneousValues: true,
-      }),
-    );
-    await app.init();
-  });
+    beforeEach(async () => {
+      isHealthyMock = vi.fn();
+      subscribeMock = vi.fn();
 
-  afterEach(async () => {
-    await app.close();
-  });
+      const moduleFixture: TestingModule = await Test.createTestingModule({
+        imports: [appModule],
+      })
+        .overrideProvider(RabbitmqService)
+        .useValue({ isHealthy: isHealthyMock, subscribe: subscribeMock })
+        .compile();
 
-  describe(`(GET) ${HEALTH_ENDPOINT}`, () => {
+      app = moduleFixture.createNestApplication();
+      configureApp(app, name);
+      await app.init();
+      vi.clearAllMocks();
+    });
+
+    afterEach(async () => {
+      await app.close();
+    });
+
     describe('success', () => {
       it(`should return ${HttpStatus.OK} when RabbitMQ is healthy`, async () => {
         isHealthyMock.mockReturnValue({ rabbitmq: { status: 'up' } });
@@ -60,7 +62,7 @@ describe('HealthController (e2e)', () => {
           details: { rabbitmq: { status: 'up' } },
         });
         expect(isHealthyMock).toHaveBeenCalledTimes(1);
-        expect(subscribeMock).toHaveBeenCalledTimes(1);
+        expect(subscribeMock).not.toHaveBeenCalled();
       });
     });
 
@@ -77,7 +79,7 @@ describe('HealthController (e2e)', () => {
           details: { rabbitmq: { status: 'down' } },
         });
         expect(isHealthyMock).toHaveBeenCalledTimes(1);
-        expect(subscribeMock).toHaveBeenCalledTimes(1);
+        expect(subscribeMock).not.toHaveBeenCalled();
       });
     });
   });
