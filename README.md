@@ -174,6 +174,38 @@ heartbeat events sent to browser clients.
 
 ---
 
+## RabbitMQ startup and recovery
+
+The API startup waits for RabbitMQ. During `RabbitmqService.onModuleInit()`, the
+service awaits `amqplib.connect()`, and the Nest applications do not finish
+starting until RabbitMQ is connected and the consumer and publisher channels are
+created.
+
+RabbitMQ connection recovery is handled by `amqplib` recovery options. If
+RabbitMQ is unavailable during startup, `amqplib` keeps retrying the initial
+connection and startup remains blocked until a connection succeeds. After the
+initial connection succeeds, the same recovery configuration reconnects after
+connection loss and reruns the channel setup callback. That setup recreates the
+consumer and publisher channels, binds the global routing key, restores stored
+chat queue bindings, and restarts the consumer when a subscription callback has
+already been registered.
+
+Current recovery settings in `RabbitmqService`:
+
+```ts
+initialDelay: 100
+maxDelay: 5000
+factor: 2
+jitter: 0.2
+maxRetries: Infinity
+```
+
+The `reconnect-scheduled` log is attached after the first successful connection,
+so it is intended for reconnects after startup. Initial startup retry attempts
+are handled inside `amqplib` before the service receives the connected client.
+
+---
+
 ## Public and private apps
 
 The service starts two Nest applications from the same `main.ts` process. Each

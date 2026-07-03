@@ -4,7 +4,7 @@ import { BeforeApplicationShutdown, Inject, Injectable, Logger, OnModuleInit } f
 import type { ConfigType } from '@nestjs/config';
 import { HealthIndicatorResult, HealthIndicatorService } from '@nestjs/terminus';
 import { connect } from 'amqplib';
-import type { Channel, ConfirmChannel, ConsumeMessage } from 'amqplib';
+import type { Channel, ChannelModel, ConfirmChannel, ConsumeMessage, RecoveringChannelModel } from 'amqplib';
 
 import { NotificationRecipient } from '../enums';
 import { rabbitmqConfigFactory } from '../rabbitmq-config.factory';
@@ -21,7 +21,10 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
   private readonly logger = new Logger(RabbitmqService.name);
   private readonly instanceId = crypto.randomUUID();
 
-  private client?: Awaited<ReturnType<typeof connect>>;
+  private client?: RecoveringChannelModel;
+
+  private readonly desiredRoutingKeys = new Set<string>();
+  private subscriptionCallback?: RabbitmqEventCallback;
 
   // Consumes messages from this app instance's exclusive queue.
   private consumerChannel?: Channel;
@@ -37,9 +40,8 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
   ) {}
 
   public async onModuleInit(): Promise<void> {
-    this.logger.log('RabbitmqService initialized');
     await this.connect();
-    await this.bindGlobal();
+    this.logger.log('RabbitmqService initialized');
   }
 
   public async beforeApplicationShutdown(signal?: string): Promise<void> {
@@ -59,27 +61,38 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
   }
 
   public async subscribe(callback: RabbitmqEventCallback): Promise<void> {
-    if (!this.consumerChannel) {
-      throw new Error('RabbitMQ consumer channel has not been initialized');
-    }
-
-    if (this.consumerTag) {
+    if (this.subscriptionCallback) {
       this.logger.warn('Unable to subscribe: RabbitMQ consumer has already been started');
       throw new Error('RabbitMQ consumer has already been started');
     }
 
-    const { consumerTag } = await this.consumerChannel.consume(
+    this.subscriptionCallback = callback;
+    await this.startSubscriptionConsumer();
+  }
+
+  private async startSubscriptionConsumer(): Promise<void> {
+    const subscriptionCallback = this.subscriptionCallback;
+    if (!subscriptionCallback) return;
+
+    if (!this.consumerChannel) {
+      throw new Error('RabbitMQ consumer channel has not been initialized');
+    }
+
+    if (this.consumerTag) return;
+
+    const consumerChannel = this.consumerChannel;
+    const { consumerTag } = await consumerChannel.consume(
       this.queueName,
       async (message) => {
         if (!message) return;
 
         try {
           const event = this.parseMessage(message);
-          await callback(event, message);
-          this.consumerChannel?.ack(message);
+          await subscriptionCallback(event, message);
+          consumerChannel.ack(message);
         } catch (error) {
           this.logger.error('Failed to process RabbitMQ message', error);
-          this.consumerChannel?.nack(message, false, false);
+          consumerChannel.nack(message, false, false);
         }
       },
       { noAck: false },
@@ -125,18 +138,56 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
   }
 
   private async connect(): Promise<void> {
-    this.client = await connect(this.config.url);
-
-    this.client.on('error', (error) => {
-      this.logger.error('RabbitMQ connection error:', error);
+    this.client = await connect(this.config.url, {
+      recovery: {
+        initialDelay: 100,
+        maxDelay: 5000,
+        factor: 2,
+        jitter: 0.2,
+        maxRetries: Infinity,
+        setup: async (model: ChannelModel) => {
+          await this.recoveringChannelSetup(model);
+        },
+      },
     });
 
-    this.client.on('close', () => {
-      this.logger.warn('RabbitMQ connection closed');
-      this.resetConnection();
+    this.client.on('disconnect', (error) => {
+      this.logger.error('RabbitMQ connection disconnected:', error);
     });
 
-    this.consumerChannel = await this.client.createChannel();
+    this.client.on('reconnect-scheduled', (info) => {
+      const errorMessage = info.error.message;
+      this.logger.log(
+        `RabbitMQ reconnect scheduled | Attempt: ${info.attempt} | Delay: ${info.delay}ms` +
+          (errorMessage ? ` | Error: ${errorMessage}` : ''),
+      );
+    });
+  }
+
+  private async recoveringChannelSetup(model: ChannelModel): Promise<void> {
+    await Promise.all([this.setupConsumerChannel(model), this.setupPublisherChannel(model)]);
+    await this.bindGlobal();
+    await this.restoreQueueBindings();
+    await this.startSubscriptionConsumer();
+  }
+
+  private async restoreQueueBindings(): Promise<void> {
+    if (!this.consumerChannel) {
+      throw new Error('RabbitMQ consumer channel has not been initialized');
+    }
+
+    const routingKeys = [...this.desiredRoutingKeys];
+    await Promise.all(
+      routingKeys.map((routingKey) => this.consumerChannel!.bindQueue(this.queueName, this.exchangeName, routingKey)),
+    );
+
+    this.logger.log(`Restored ${routingKeys.length} RabbitMQ queue binding(s): ${routingKeys.join(', ')}`);
+  }
+
+  private async setupConsumerChannel(model: ChannelModel): Promise<void> {
+    this.consumerTag = undefined;
+    this.consumerChannel = await model.createChannel();
+
     await this.consumerChannel.assertExchange(this.exchangeName, 'topic', {
       durable: true,
     });
@@ -145,28 +196,29 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
       exclusive: true,
       autoDelete: true,
     });
+
     this.consumerChannel.on('error', (error) => {
       this.logger.error('RabbitMQ consumer channel error:', error);
     });
     this.consumerChannel.on('close', () => {
       this.logger.warn('RabbitMQ consumer channel closed');
-      this.consumerChannel = undefined;
-      this.resetConsumerTag();
     });
+    this.logger.log('Consumer channel setup complete');
+  }
 
-    this.publisherChannel = await this.client.createConfirmChannel();
+  private async setupPublisherChannel(model: ChannelModel): Promise<void> {
+    this.publisherChannel = await model.createConfirmChannel();
     await this.publisherChannel.assertExchange(this.exchangeName, 'topic', {
       durable: true,
     });
+
     this.publisherChannel.on('error', (error) => {
       this.logger.error('RabbitMQ publisher channel error:', error);
     });
     this.publisherChannel.on('close', () => {
       this.logger.warn('RabbitMQ publisher channel closed');
-      this.publisherChannel = undefined;
     });
-
-    this.logger.log(`Connected to RabbitMQ | Exchange: ${this.exchangeName} | Queue: ${this.queueName}`);
+    this.logger.log('Publisher channel setup complete');
   }
 
   private async publish(routingKey: string, event: RabbitmqNotificationEvent): Promise<void> {
@@ -191,8 +243,15 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
   }
 
   private async bindRoutingKey(routingKey: string): Promise<void> {
+    const isGlobalKey = routingKey === this.globalRoutingKey;
+    if (!isGlobalKey) {
+      this.desiredRoutingKeys.add(routingKey);
+    }
+
     if (!this.consumerChannel) {
-      throw new Error('RabbitMQ consumer channel has not been initialized');
+      if (isGlobalKey) return;
+      this.logger.warn(`Stored routing key "${routingKey}", but consumer channel is not ready yet`);
+      return;
     }
 
     await this.consumerChannel.bindQueue(this.queueName, this.exchangeName, routingKey);
@@ -201,8 +260,11 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
   }
 
   private async unbindRoutingKey(routingKey: string): Promise<void> {
+    this.desiredRoutingKeys.delete(routingKey);
+
     if (!this.consumerChannel) {
-      throw new Error('RabbitMQ consumer channel has not been initialized');
+      this.logger.warn(`Removed stored routing key "${routingKey}", but consumer channel is not ready`);
+      return;
     }
 
     await this.consumerChannel.unbindQueue(this.queueName, this.exchangeName, routingKey);
@@ -218,17 +280,6 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     } catch {
       throw new Error(`Invalid RabbitMQ JSON message: ${content}`);
     }
-  }
-
-  private resetConsumerTag(): void {
-    this.consumerTag = undefined;
-  }
-
-  private resetConnection(): void {
-    this.client = undefined;
-    this.consumerChannel = undefined;
-    this.publisherChannel = undefined;
-    this.resetConsumerTag();
   }
 
   private get queueName(): string {
