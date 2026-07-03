@@ -6,12 +6,15 @@ import { App } from 'supertest/types';
 import { vi } from 'vitest';
 
 import { configureApp, openSseStream } from './helpers';
+import { TIM_TEST_COOKIE, TIM_TEST_TOKEN_CONTEXT, TimMockService } from './services/tim.mock-service';
 import { AppModule } from '../src/app.module';
 import { AppType } from '../src/enums';
 import { SSE_HEARTBEAT_EVENT_TYPE } from '../src/notification/notification.constants';
 import { NotificationService } from '../src/notification/services';
 import { PublicNotificationsController } from '../src/public-notifications/controllers';
 import { NotificationRecipient } from '../src/rabbitmq/enums';
+import { TimTokenGuard } from '../src/tim/guards';
+import { TimService } from '../src/tim/services';
 
 describe('PublicNotificationsController (e2e)', () => {
   const PUBLIC_NOTIFICATION_EVENTS_ENDPOINT = '/public/v1/notifications/events';
@@ -26,6 +29,7 @@ describe('PublicNotificationsController (e2e)', () => {
   let mockedPublicApp: INestApplication<App>;
   let privateApp: INestApplication<App>;
   let subscribeMock: ReturnType<typeof vi.fn>;
+  const timMockService = new TimMockService();
 
   beforeAll(async () => {
     subscribeMock = vi.fn(() =>
@@ -37,7 +41,10 @@ describe('PublicNotificationsController (e2e)', () => {
 
     const publicModuleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule.register(AppType.Public)],
-    }).compile();
+    })
+      .overrideProvider(TimService)
+      .useValue(timMockService)
+      .compile();
 
     const mockedPublicModuleFixture: TestingModule = await Test.createTestingModule({
       controllers: [PublicNotificationsController],
@@ -46,12 +53,20 @@ describe('PublicNotificationsController (e2e)', () => {
           provide: NotificationService,
           useValue: { getEventSse: subscribeMock },
         },
+        {
+          provide: TimService,
+          useValue: timMockService,
+        },
+        TimTokenGuard,
       ],
     }).compile();
 
     const privateModuleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule.register(AppType.Private)],
-    }).compile();
+    })
+      .overrideProvider(TimService)
+      .useValue(timMockService)
+      .compile();
 
     publicApp = publicModuleFixture.createNestApplication();
     configureApp(publicApp, AppType.Public);
@@ -76,20 +91,31 @@ describe('PublicNotificationsController (e2e)', () => {
     describe('success', () => {
       beforeEach(() => {
         subscribeMock.mockClear();
+        timMockService.verifyToken.mockClear();
       });
 
       it('should receive a published event through the SSE stream', async () => {
-        const stream = await openSseStream(publicApp, PUBLIC_NOTIFICATION_EVENTS_ENDPOINT, {
-          chatUuid: [CHAT_UUID],
-        });
+        const stream = await openSseStream(
+          publicApp,
+          PUBLIC_NOTIFICATION_EVENTS_ENDPOINT,
+          {
+            chatUuid: [CHAT_UUID],
+          },
+          {
+            Cookie: TIM_TEST_COOKIE,
+          },
+        );
 
         try {
           expect(stream.statusCode).toBe(HttpStatus.OK);
           expect(stream.contentType).toMatch(/text\/event-stream/);
+          expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
+          expect(timMockService.verifyToken).toHaveBeenCalledTimes(1);
           await stream.waitForEvent(SSE_HEARTBEAT_EVENT_TYPE);
 
           await request(privateApp.getHttpServer())
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
+            .set('Cookie', TIM_TEST_COOKIE)
             .send({
               eventUuid: EVENT_UUID,
               recipient: NotificationRecipient.Global,
@@ -98,6 +124,8 @@ describe('PublicNotificationsController (e2e)', () => {
             })
             .expect(HttpStatus.ACCEPTED);
 
+          expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
+          expect(timMockService.verifyToken).toHaveBeenCalledTimes(2);
           await expect(stream.waitForEvent(EVENT_TYPE)).resolves.toEqual({
             type: EVENT_TYPE,
             data: {
@@ -115,6 +143,7 @@ describe('PublicNotificationsController (e2e)', () => {
       it('should open an SSE stream with multiple chat UUIDs', async () => {
         await request(mockedPublicApp.getHttpServer())
           .get(PUBLIC_NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
           .query({ chatUuid: [CHAT_UUID, SECOND_CHAT_UUID] })
           .expect(HttpStatus.OK)
           .expect('Content-Type', /text\/event-stream/);
@@ -123,12 +152,17 @@ describe('PublicNotificationsController (e2e)', () => {
           expect.objectContaining({
             chatUuid: [CHAT_UUID, SECOND_CHAT_UUID],
           }),
+          expect.objectContaining({
+            timTokenVerificationContext: TIM_TEST_TOKEN_CONTEXT,
+          }),
         );
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
       });
 
       it('should discard query parameters that are not whitelisted', async () => {
         await request(mockedPublicApp.getHttpServer())
           .get(PUBLIC_NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
           .query({ chatUuid: CHAT_UUID, randomParam: 'discard-me' })
           .expect(HttpStatus.OK)
           .expect('Content-Type', /text\/event-stream/);
@@ -137,17 +171,20 @@ describe('PublicNotificationsController (e2e)', () => {
 
         expect(subscribeQuery).toEqual(expect.objectContaining({ chatUuid: [CHAT_UUID] }));
         expect(subscribeQuery).not.toHaveProperty('randomParam');
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
       });
     });
 
     describe('error', () => {
       beforeEach(() => {
         subscribeMock.mockClear();
+        timMockService.verifyToken.mockClear();
       });
 
       it(`should return ${HttpStatus.BAD_REQUEST} when "chatUuid" query parameter is missing`, async () => {
         const response = await request(mockedPublicApp.getHttpServer())
           .get(PUBLIC_NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
           .expect(HttpStatus.BAD_REQUEST);
 
         expect(response.body).toEqual(
@@ -158,11 +195,13 @@ describe('PublicNotificationsController (e2e)', () => {
           }),
         );
         expect(subscribeMock).not.toHaveBeenCalled();
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
       });
 
       it(`should return ${HttpStatus.BAD_REQUEST} when "chatUuid" query parameter is empty`, async () => {
         const response = await request(mockedPublicApp.getHttpServer())
           .get(PUBLIC_NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
           .query({ chatUuid: '' })
           .expect(HttpStatus.BAD_REQUEST);
 
@@ -174,11 +213,13 @@ describe('PublicNotificationsController (e2e)', () => {
           }),
         );
         expect(subscribeMock).not.toHaveBeenCalled();
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
       });
 
       it(`should return ${HttpStatus.BAD_REQUEST} when "chatUuid" query parameter is not a UUID`, async () => {
         const response = await request(mockedPublicApp.getHttpServer())
           .get(PUBLIC_NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
           .query({ chatUuid: 'not-a-uuid' })
           .expect(HttpStatus.BAD_REQUEST);
 
@@ -190,11 +231,13 @@ describe('PublicNotificationsController (e2e)', () => {
           }),
         );
         expect(subscribeMock).not.toHaveBeenCalled();
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
       });
 
       it(`should return ${HttpStatus.BAD_REQUEST} when one of many "chatUuid" query parameters is not a UUID`, async () => {
         const response = await request(mockedPublicApp.getHttpServer())
           .get(PUBLIC_NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
           .query({ chatUuid: [CHAT_UUID, 'not-a-uuid'] })
           .expect(HttpStatus.BAD_REQUEST);
 
@@ -206,11 +249,13 @@ describe('PublicNotificationsController (e2e)', () => {
           }),
         );
         expect(subscribeMock).not.toHaveBeenCalled();
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
       });
 
       it(`should return ${HttpStatus.BAD_REQUEST} when one of many "chatUuid" query parameters is empty`, async () => {
         const response = await request(mockedPublicApp.getHttpServer())
           .get(PUBLIC_NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
           .query({ chatUuid: [CHAT_UUID, ''] })
           .expect(HttpStatus.BAD_REQUEST);
 
@@ -222,11 +267,13 @@ describe('PublicNotificationsController (e2e)', () => {
           }),
         );
         expect(subscribeMock).not.toHaveBeenCalled();
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
       });
 
       it(`should return ${HttpStatus.BAD_REQUEST} when one of many "chatUuid" query parameters is numeric`, async () => {
         const response = await request(mockedPublicApp.getHttpServer())
           .get(PUBLIC_NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
           .query({ chatUuid: [CHAT_UUID, 123] })
           .expect(HttpStatus.BAD_REQUEST);
 
@@ -238,6 +285,7 @@ describe('PublicNotificationsController (e2e)', () => {
           }),
         );
         expect(subscribeMock).not.toHaveBeenCalled();
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
       });
     });
   });

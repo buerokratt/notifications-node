@@ -10,6 +10,7 @@ import { EventModule } from './event/event.module';
 import { HealthModule } from './health/health.module';
 import { PrivateNotificationsModule } from './private-notifications/private-notifications.module';
 import { PublicNotificationsModule } from './public-notifications/public-notifications.module';
+import { TimModule } from './tim/tim.module';
 
 @Module({})
 export class AppModule {
@@ -23,6 +24,7 @@ export class AppModule {
         }),
         ConfigModule.forFeature(appConfigFactory),
         HealthModule,
+        TimModule,
         ...(appType === AppType.Public
           ? [EventModule.forRoot({ type: EventBusType.RabbitMQ }), PublicNotificationsModule]
           : []),
