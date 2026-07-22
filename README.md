@@ -379,6 +379,19 @@ values. `NODE_ENV` defaults to `development` when it is not set.
 | `TIM_TOKEN_REVALIDATION_INTERVAL_MS` | Required | `5000` | Interval, in milliseconds, for revalidating TIM tokens. |
 | `RABBITMQ_URL` | Required | `amqps://user:password@rabbitmq.example:5671/vhost?heartbeat=30` | AMQP/AMQPS connection URL. Production Docker Compose uses its included RabbitMQ service by default; change the URL when using an external or managed instance. |
 | `RABBITMQ_PREFIX` | Optional | `production` | Use `production` to isolate production RabbitMQ resources, or leave it empty when no prefix is needed. |
+| `VALKEY_HOST` | Required | `valkey` | Valkey hostname used by the standalone GLIDE client; must be a non-empty string. |
+| `VALKEY_PORT` | Required | `6379` | Valkey port; must be an integer from `1` through `65535`. |
+| `VALKEY_USE_TLS` | Required | `true` | Controls TLS for the Valkey connection. Use `true` for external or managed production instances; use `false` only on a trusted private network where TLS is not configured. |
+| `VALKEY_USERNAME` | Optional | `notifications` | Valkey ACL username. Supplying a username also requires a non-empty password. |
+| `VALKEY_PASSWORD` | Optional | `<secret>` | Valkey password. Empty values are treated as unset. |
+| `VALKEY_CONNECT_TIMEOUT_MS` | Required | `10000` | Valkey connection timeout in milliseconds; must be an integer of at least `1`. |
+| `VALKEY_REQUEST_TIMEOUT_MS` | Required | `5000` | Valkey request timeout in milliseconds; must be an integer of at least `1`. |
+| `WEB_PUSH_VAPID_SUBJECT` | Required | `mailto:notifications@example.com` | VAPID contact subject used to sign Web Push requests; must start with `mailto:` or `https://`. |
+| `WEB_PUSH_VAPID_PUBLIC_KEY` | Required | `<vapid-public-key>` | Non-empty VAPID public key paired with `WEB_PUSH_VAPID_PRIVATE_KEY`. |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | Required | `<vapid-private-key>` | Non-empty VAPID private key used by the server; keep it secret. |
+| `WEB_PUSH_TTL_SECONDS` | Required | `86400` | Default Web Push provider retention time in seconds when an event does not specify `webPush.ttl`; must be an integer of at least `0`. |
+| `WEB_PUSH_REQUEST_TIMEOUT_MS` | Required | `10000` | Timeout for each Web Push provider request in milliseconds; must be an integer of at least `1`. |
+| `WEB_PUSH_CONCURRENCY` | Required | `20` | Maximum number of Web Push provider deliveries processed concurrently by one delivery operation; must be an integer of at least `1`. |
 
 ---
 

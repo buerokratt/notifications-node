@@ -1,4 +1,4 @@
-import { Injectable, Logger, MessageEvent, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, MessageEvent, ServiceUnavailableException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import {
   catchError,
@@ -16,6 +16,7 @@ import {
   Subject,
   takeUntil,
 } from 'rxjs';
+import type { PushSubscription } from 'web-push';
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { RabbitmqService } from '../../rabbitmq/services';
@@ -23,6 +24,8 @@ import type { RabbitmqNotificationEvent } from '../../rabbitmq/types';
 import { NOTIFICATION_RECEIVED_EVENT } from '../../shared/shared.constants';
 import { TimService } from '../../tim/services';
 import type { TimAuthenticatedRequest } from '../../tim/types';
+import { WebPushService } from '../../web-push/services';
+import type { WebPushRegistrationHandle } from '../../web-push/types';
 import { CreateNotificationEventBodyDto, NotificationEventsQueryDto } from '../dtos';
 import {
   SSE_HEARTBEAT_EVENT_TYPE,
@@ -45,6 +48,7 @@ export class NotificationService {
   constructor(
     private readonly rabbitmqService: RabbitmqService,
     private readonly timService: TimService,
+    private readonly webPushService: WebPushService,
   ) {}
 
   public async publishNotificationEvent(body: CreateNotificationEventBodyDto): Promise<void> {
@@ -55,6 +59,7 @@ export class NotificationService {
         ...(body.recipient === NotificationRecipient.Chat ? { recipientUuid: body.recipientUuid } : {}),
         type: body.type,
         payload: body.payload,
+        ...(body.webPush ? { webPush: body.webPush } : {}),
       });
     } catch (error) {
       this.logger.error('Failed to publish RabbitMQ notification event', error);
@@ -65,8 +70,15 @@ export class NotificationService {
   public async getEventSse(
     query: NotificationEventsQueryDto,
     request: TimAuthenticatedRequest,
+    webPushSubscription?: PushSubscription,
   ): Promise<Observable<MessageEvent>> {
     const chatUuids = [...new Set(query.chatUuid)];
+    const { decodedToken } = request.timTokenVerificationContext;
+    const webPushRegistration = await this.registerWebPushSubscription(
+      chatUuids,
+      webPushSubscription,
+      decodedToken.exp,
+    );
     chatUuids.forEach((chatUuid) => this.addChatEventStreamSubscriber(chatUuid));
     await Promise.all(
       chatUuids.map((chatUuid) =>
@@ -99,8 +111,11 @@ export class NotificationService {
       return () => {
         subscription.unsubscribe();
         closeStream.complete();
-        void Promise.all(chatUuids.map((chatUuid) => this.removeChatEventStreamSubscriber(chatUuid))).catch((error) => {
-          this.logger.error('Failed to remove chat SSE subscribers', error);
+        void Promise.all([
+          ...(webPushRegistration ? [this.webPushService.unregisterChatConnections(webPushRegistration)] : []),
+          ...chatUuids.map((chatUuid) => this.removeChatEventStreamSubscriber(chatUuid)),
+        ]).catch((error) => {
+          this.logger.error('Failed to clean up disconnected SSE subscriber', error);
         });
       };
     });
@@ -108,7 +123,18 @@ export class NotificationService {
 
   @OnEvent(NOTIFICATION_RECEIVED_EVENT)
   public handleRabbitmqNotificationEvent(event: RabbitmqNotificationEvent): void {
-    this.logger.log('Received event:', event);
+    if (event.webPush) {
+      void this.webPushService.deliver({
+        eventUuid: event.eventUuid,
+        target:
+          event.recipient === NotificationRecipient.Global
+            ? { type: NotificationRecipient.Global }
+            : { type: NotificationRecipient.Chat, chatUuid: event.recipientUuid! },
+        title: event.webPush.title,
+        body: event.webPush.body,
+        ttl: event.webPush.ttl,
+      });
+    }
 
     const message: MessageEvent = {
       type: event.type,
@@ -161,10 +187,24 @@ export class NotificationService {
   private createHeartbeatStream(): Observable<MessageEvent> {
     const createHeartbeat = (): MessageEvent => ({
       type: SSE_HEARTBEAT_EVENT_TYPE,
-      data: {},
+      data: { heartbeatIntervalMs: SSE_HEARTBEAT_INTERVAL_MS },
     });
 
     return merge(of(createHeartbeat()), interval(SSE_HEARTBEAT_INTERVAL_MS).pipe(map(createHeartbeat)));
+  }
+
+  private async registerWebPushSubscription(
+    chatUuids: string[],
+    webPushSubscription: PushSubscription | undefined,
+    expirationTimeSeconds?: number,
+  ): Promise<WebPushRegistrationHandle | undefined> {
+    if (!webPushSubscription) return;
+
+    return this.webPushService.registerSubscription(
+      chatUuids,
+      webPushSubscription,
+      this.getTokenExpirationTimeSeconds(expirationTimeSeconds),
+    );
   }
 
   private createTokenRevalidationStream(
@@ -207,5 +247,15 @@ export class NotificationService {
         channelId: chatUuid,
       });
     }
+  }
+
+  private getTokenExpirationTimeSeconds(expirationTimeSeconds?: number): number {
+    if (!expirationTimeSeconds) throw new BadRequestException('JWT does not contain an expiration claim');
+
+    if (expirationTimeSeconds <= Math.floor(Date.now() / 1000)) {
+      throw new BadRequestException('JWT has expired');
+    }
+
+    return expirationTimeSeconds;
   }
 }

@@ -1,8 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsDefined, IsEnum, IsNotEmpty, IsObject, IsString, IsUUID } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsDefined, IsEnum, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, ValidateNested } from 'class-validator';
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { IsNotReservedNotificationEventType, IsValidNotificationRecipientUuid } from '../validators';
+import { NotificationEventWebPushDto } from './notification-event-web-push.dto';
 
 export class CreateNotificationEventBodyDto {
   @IsDefined()
@@ -49,4 +51,11 @@ export class CreateNotificationEventBodyDto {
     example: { isRandomPayload: true },
   })
   readonly payload!: Record<string, unknown>;
+
+  @IsObject()
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => NotificationEventWebPushDto)
+  @ApiPropertyOptional({ type: NotificationEventWebPushDto })
+  readonly webPush?: NotificationEventWebPushDto;
 }

@@ -8,6 +8,7 @@ import { configureApp } from './helpers';
 import { AppModule } from '../src/app.module';
 import { AppType } from '../src/enums';
 import { RabbitmqService } from '../src/rabbitmq/services';
+import { ValkeyService } from '../src/valkey/services';
 
 describe('HealthController (e2e)', () => {
   const HEALTH_ENDPOINT = '/health';
@@ -25,18 +26,22 @@ describe('HealthController (e2e)', () => {
 
   describe.each(appConfigs)('$name app (GET) /health', ({ appModule, name }) => {
     let app: INestApplication<App>;
-    let isHealthyMock: ReturnType<typeof vi.fn>;
+    let rabbitmqIsHealthyMock: ReturnType<typeof vi.fn>;
     let subscribeMock: ReturnType<typeof vi.fn>;
+    let valkeyIsHealthyMock: ReturnType<typeof vi.fn>;
 
     beforeEach(async () => {
-      isHealthyMock = vi.fn();
+      rabbitmqIsHealthyMock = vi.fn();
       subscribeMock = vi.fn();
+      valkeyIsHealthyMock = vi.fn();
 
       const moduleFixture: TestingModule = await Test.createTestingModule({
         imports: [appModule],
       })
         .overrideProvider(RabbitmqService)
-        .useValue({ isHealthy: isHealthyMock, subscribe: subscribeMock })
+        .useValue({ isHealthy: rabbitmqIsHealthyMock, subscribe: subscribeMock })
+        .overrideProvider(ValkeyService)
+        .useValue({ isHealthy: valkeyIsHealthyMock })
         .compile();
 
       app = moduleFixture.createNestApplication();
@@ -50,35 +55,68 @@ describe('HealthController (e2e)', () => {
     });
 
     describe('success', () => {
-      it(`should return ${HttpStatus.OK} when RabbitMQ is healthy`, async () => {
-        isHealthyMock.mockReturnValue({ rabbitmq: { status: 'up' } });
+      it(`should return ${HttpStatus.OK} when RabbitMQ and Valkey are healthy`, async () => {
+        rabbitmqIsHealthyMock.mockReturnValue({ rabbitmq: { status: 'up' } });
+        valkeyIsHealthyMock.mockReturnValue({ valkey: { status: 'up' } });
 
         const response = await request(app.getHttpServer()).get(HEALTH_ENDPOINT).expect(HttpStatus.OK);
 
         expect(response.body).toEqual({
           status: 'ok',
-          info: { rabbitmq: { status: 'up' } },
+          info: {
+            rabbitmq: { status: 'up' },
+            valkey: { status: 'up' },
+          },
           error: {},
-          details: { rabbitmq: { status: 'up' } },
+          details: {
+            rabbitmq: { status: 'up' },
+            valkey: { status: 'up' },
+          },
         });
-        expect(isHealthyMock).toHaveBeenCalledTimes(1);
+        expect(rabbitmqIsHealthyMock).toHaveBeenCalledTimes(1);
+        expect(valkeyIsHealthyMock).toHaveBeenCalledTimes(1);
         expect(subscribeMock).not.toHaveBeenCalled();
       });
     });
 
     describe('error', () => {
       it(`should return ${HttpStatus.SERVICE_UNAVAILABLE} when RabbitMQ is unhealthy`, async () => {
-        isHealthyMock.mockReturnValue({ rabbitmq: { status: 'down' } });
+        rabbitmqIsHealthyMock.mockReturnValue({ rabbitmq: { status: 'down' } });
+        valkeyIsHealthyMock.mockReturnValue({ valkey: { status: 'up' } });
 
         const response = await request(app.getHttpServer()).get(HEALTH_ENDPOINT).expect(HttpStatus.SERVICE_UNAVAILABLE);
 
         expect(response.body).toEqual({
           status: 'error',
-          info: {},
+          info: { valkey: { status: 'up' } },
           error: { rabbitmq: { status: 'down' } },
-          details: { rabbitmq: { status: 'down' } },
+          details: {
+            rabbitmq: { status: 'down' },
+            valkey: { status: 'up' },
+          },
         });
-        expect(isHealthyMock).toHaveBeenCalledTimes(1);
+        expect(rabbitmqIsHealthyMock).toHaveBeenCalledTimes(1);
+        expect(valkeyIsHealthyMock).toHaveBeenCalledTimes(1);
+        expect(subscribeMock).not.toHaveBeenCalled();
+      });
+
+      it(`should return ${HttpStatus.SERVICE_UNAVAILABLE} when Valkey is unhealthy`, async () => {
+        rabbitmqIsHealthyMock.mockReturnValue({ rabbitmq: { status: 'up' } });
+        valkeyIsHealthyMock.mockReturnValue({ valkey: { status: 'down' } });
+
+        const response = await request(app.getHttpServer()).get(HEALTH_ENDPOINT).expect(HttpStatus.SERVICE_UNAVAILABLE);
+
+        expect(response.body).toEqual({
+          status: 'error',
+          info: { rabbitmq: { status: 'up' } },
+          error: { valkey: { status: 'down' } },
+          details: {
+            rabbitmq: { status: 'up' },
+            valkey: { status: 'down' },
+          },
+        });
+        expect(rabbitmqIsHealthyMock).toHaveBeenCalledTimes(1);
+        expect(valkeyIsHealthyMock).toHaveBeenCalledTimes(1);
         expect(subscribeMock).not.toHaveBeenCalled();
       });
     });
