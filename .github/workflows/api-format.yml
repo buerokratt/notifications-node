@@ -22,6 +22,8 @@ jobs:
 
       - name: Install dependencies
         uses: ./.github/actions/pnpm-install
+        with:
+          working-directory: api
 
       - name: Check format
         run: pnpm run format:check
