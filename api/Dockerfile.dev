@@ -1,0 +1,18 @@
+FROM --platform=linux/amd64 node:24.16.0-alpine
+
+RUN corepack enable pnpm
+RUN mkdir /api && chown node:node /api
+
+WORKDIR /api
+USER node
+
+ENV NODE_ENV=development
+
+COPY --chown=node:node package.json pnpm-lock.yaml .npmrc nest-cli.json tsconfig.json tsconfig.build.json ./
+RUN pnpm install --frozen-lockfile
+
+COPY --chown=node:node src ./src
+RUN pnpm build
+
+EXPOSE 3000
+CMD ["pnpm", "run", "start:dev"]
