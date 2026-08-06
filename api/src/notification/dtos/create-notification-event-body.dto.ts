@@ -2,7 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsDefined, IsEnum, IsNotEmpty, IsObject, IsString, IsUUID } from 'class-validator';
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
-import { IsValidNotificationRecipientUuid } from '../validators';
+import { IsNotReservedNotificationEventType, IsValidNotificationRecipientUuid } from '../validators';
 
 export class CreateNotificationEventBodyDto {
   @IsDefined()
@@ -34,8 +34,9 @@ export class CreateNotificationEventBodyDto {
   @IsDefined()
   @IsString()
   @IsNotEmpty()
+  @IsNotReservedNotificationEventType()
   @ApiProperty({
-    description: 'The SSE event/ notification type',
+    description: 'The SSE event/ notification type. Reserved types cannot be published through this endpoint.',
     example: 'stream_complete',
   })
   readonly type!: string;

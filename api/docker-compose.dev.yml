@@ -12,21 +12,57 @@ services:
       - ./config/development.env
     environment:
       RABBITMQ_URL: amqp://rabbitmq:5672?heartbeat=30
+      TIM_URL: http://tim:8085
     depends_on:
       rabbitmq:
         condition: service_healthy
     ports:
       - '3000:3000'
       - '3001:3001'
+    networks:
+      - bykstack
     restart: always
+
+  tim:
+    container_name: tim
+    image: tim
+    depends_on:
+      - tim-postgresql
+    environment:
+      - SECURITY_ALLOWLIST_JWT=127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+      - JWT_INTEGRATION_SIGNATURE_KEY_STORE_PASSWORD=defaultpassword
+    ports:
+      - 8085:8085
+    networks:
+      - bykstack
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+
+  tim-postgresql:
+    container_name: tim-postgresql
+    image: postgres:18-alpine
+    environment:
+      - POSTGRES_USER=tim
+      - POSTGRES_PASSWORD=123
+      - POSTGRES_DB=tim
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    ports:
+      - 9876:5432
+    networks:
+      - bykstack
 
   rabbitmq:
     image: 'rabbitmq:4.3-management-alpine'
     ports:
       - 5672:5672
       - 15672:15672 # Management UI
+    networks:
+      - bykstack
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', 'ping']
       interval: 10s
       timeout: 5s
       retries: 5
+
+networks:
+  bykstack:

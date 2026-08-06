@@ -1,13 +1,34 @@
 import { Injectable, Logger, MessageEvent, ServiceUnavailableException } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import { interval, map, merge, Observable, of, Subject } from 'rxjs';
+import {
+  catchError,
+  concat,
+  defer,
+  EMPTY,
+  from,
+  ignoreElements,
+  interval,
+  map,
+  merge,
+  mergeMap,
+  Observable,
+  of,
+  Subject,
+  takeUntil,
+} from 'rxjs';
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { RabbitmqService } from '../../rabbitmq/services';
 import type { RabbitmqNotificationEvent } from '../../rabbitmq/types';
 import { NOTIFICATION_RECEIVED_EVENT } from '../../shared/shared.constants';
+import { TimService } from '../../tim/services';
+import type { TimAuthenticatedRequest } from '../../tim/types';
 import { CreateNotificationEventBodyDto, NotificationEventsQueryDto } from '../dtos';
-import { SSE_HEARTBEAT_EVENT_TYPE, SSE_HEARTBEAT_INTERVAL_MS } from '../notification.constants';
+import {
+  SSE_HEARTBEAT_EVENT_TYPE,
+  SSE_HEARTBEAT_INTERVAL_MS,
+  SSE_SESSION_EXPIRED_EVENT_TYPE,
+} from '../notification.constants';
 
 @Injectable()
 export class NotificationService {
@@ -21,7 +42,10 @@ export class NotificationService {
     }
   >();
 
-  constructor(private readonly rabbitmqService: RabbitmqService) {}
+  constructor(
+    private readonly rabbitmqService: RabbitmqService,
+    private readonly timService: TimService,
+  ) {}
 
   public async publishNotificationEvent(body: CreateNotificationEventBodyDto): Promise<void> {
     try {
@@ -38,7 +62,10 @@ export class NotificationService {
     }
   }
 
-  public async getEventSse(query: NotificationEventsQueryDto): Promise<Observable<MessageEvent>> {
+  public async getEventSse(
+    query: NotificationEventsQueryDto,
+    request: TimAuthenticatedRequest,
+  ): Promise<Observable<MessageEvent>> {
     const chatUuids = [...new Set(query.chatUuid)];
     chatUuids.forEach((chatUuid) => this.addChatEventStreamSubscriber(chatUuid));
     await Promise.all(
@@ -51,18 +78,27 @@ export class NotificationService {
     );
 
     return new Observable<MessageEvent>((subscriber) => {
+      const closeStream = new Subject<void>();
       const streams = chatUuids
         .map((chatUuid) => this.chatEventStreams.get(chatUuid)?.eventStream)
         .filter((stream): stream is Subject<MessageEvent> => !!stream);
 
-      const subscription = merge(this.globalEventStream, ...streams, this.createHeartbeatStream()).subscribe({
-        next: (message) => subscriber.next(message),
-        error: (error) => subscriber.error(error),
-        complete: () => subscriber.complete(),
-      });
+      const subscription = merge(
+        this.globalEventStream,
+        ...streams,
+        this.createHeartbeatStream(),
+        this.createTokenRevalidationStream(request, closeStream),
+      )
+        .pipe(takeUntil(closeStream))
+        .subscribe({
+          next: (message) => subscriber.next(message),
+          error: (error) => subscriber.error(error),
+          complete: () => subscriber.complete(),
+        });
 
       return () => {
         subscription.unsubscribe();
+        closeStream.complete();
         void Promise.all(chatUuids.map((chatUuid) => this.removeChatEventStreamSubscriber(chatUuid))).catch((error) => {
           this.logger.error('Failed to remove chat SSE subscribers', error);
         });
@@ -129,6 +165,31 @@ export class NotificationService {
     });
 
     return merge(of(createHeartbeat()), interval(SSE_HEARTBEAT_INTERVAL_MS).pipe(map(createHeartbeat)));
+  }
+
+  private createTokenRevalidationStream(
+    request: TimAuthenticatedRequest,
+    closeStream: Subject<void>,
+  ): Observable<MessageEvent> {
+    return interval(this.timService.tokenRevalidationIntervalMs).pipe(
+      mergeMap(() =>
+        from(this.timService.verifyToken(request.timTokenVerificationContext)).pipe(
+          ignoreElements(),
+          catchError(() =>
+            concat(
+              of({
+                type: SSE_SESSION_EXPIRED_EVENT_TYPE,
+                data: {},
+              }),
+              defer(() => {
+                closeStream.next();
+                return EMPTY;
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   private async removeChatEventStreamSubscriber(chatUuid: string): Promise<void> {

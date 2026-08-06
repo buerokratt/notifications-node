@@ -2,6 +2,8 @@
 
 # /api
 
+[Production deployment](#production-deployment)
+
 ## Current SSE notification flow
 
 The API exposes a server-sent events endpoint for browser clients:
@@ -51,6 +53,8 @@ flowchart TD
   NotificationA -->|matching chatUuid only| Client
 ```
 
+---
+
 ## Global and channel-based routing
 
 RabbitMQ uses a topic exchange for notification delivery.
@@ -84,10 +88,19 @@ This means:
 - SSE delivery after RabbitMQ is local in-memory fanout from
   `NotificationService`
 
+---
+
 ## Local Docker Compose and RabbitMQ
 
 The API directory contains Docker Compose files for running the service with
 RabbitMQ.
+
+Local development depends on a local TIM image for JWT generation and
+validation. Clone TIM and build the image before starting this service:
+
+- Clone [TIM](https://github.com/buerokratt/TIM).
+- Navigate to the TIM directory.
+- Build the image with `docker build -t tim .`
 
 For local development, use the dev compose file:
 
@@ -135,15 +148,28 @@ The API connects to RabbitMQ inside the Compose network with:
 RABBITMQ_URL=amqp://rabbitmq:5672
 ```
 
+To generate a local TIM JWT for the SSE request:
+
+```sh
+curl -i -X POST "http://localhost:8085/jwt/custom-jwt-generate" \
+  -H "Content-Type: application/json" \
+  -d '{"JWTName":"JWTTOKEN","expirationInMinutes":1280,"content":{"login":"EE30303039914"}}'
+```
+
 To open an SSE connection locally:
 
 ```sh
-curl -N "http://127.0.0.1:3000/public/v1/notifications/events?chatUuid=dee9c8da-2b40-4c6a-a31e-db278b6960b1"
+curl -N \
+  -H "Cookie: JWTTOKEN=<tim-jwt>" \
+  "http://127.0.0.1:3000/public/v1/notifications/events?chatUuid=dee9c8da-2b40-4c6a-a31e-db278b6960b1"
 ```
 
-The stream should emit periodic `heartbeat` events while connected. Real
-notification events are emitted when RabbitMQ receives matching chat events for
-the subscribed `chatUuid`.
+Replace `<tim-jwt>` with a TIM-valid JWT. The stream should emit periodic
+`heartbeat` events while connected. Real notification events are emitted when
+RabbitMQ receives matching chat events for the subscribed `chatUuid`.
+
+NB: The cookie name depends on the `TIM_JWT_COOKIE_NAMES` environment value
+order. `JWTTOKEN` is used here because it is first in `development.env`.
 
 To stop the local stack:
 
@@ -244,6 +270,44 @@ flowchart TD
   PrivateApp --> HealthPrivate[/GET /health/]
 ```
 
+---
+
+## Authentication
+
+The public SSE endpoint and private publish endpoint use `@TimAuthentication()`, which
+adds `TimTokenGuard` and Swagger cookie authentication metadata. Requests to
+those endpoints must include a valid TIM JWT in one of the configured cookie
+names from `TIM_JWT_COOKIE_NAMES`. The shared `/health` endpoint does not use
+the guard and remains public.
+
+The guard checks the configured cookie names in order and uses the first cookie
+that is present. It validates that token by calling TIM:
+
+```http
+POST <TIM_URL>/jwt/custom-jwt-verify
+```
+
+The cookie name is sent as a `text/plain` request body and the original cookie
+is forwarded in the `Cookie` header. A `200 OK` response from TIM is treated as
+valid. Missing, rejected, or unverifiable JWTs return `401 Unauthorized`.
+
+```mermaid
+flowchart LR
+  Request[HTTP request] --> Guard[TimTokenGuard]
+  Guard --> Cookies[Find first configured JWT cookie]
+  Cookies --> InitialTim[POST TIM /jwt/custom-jwt-verify]
+  InitialTim --> InitialValid{200 OK?}
+  InitialValid -->|yes| Controller[Controller handler]
+  InitialValid -->|no| Unauthorized[401 Unauthorized]
+
+  Sse[Open SSE connection] --> Revalidate[Periodic token revalidation]
+  Revalidate --> RevalidationTim[POST TIM /jwt/custom-jwt-verify]
+  RevalidationTim --> StillValid{200 OK?}
+  StillValid -->|yes| Sse
+  StillValid -->|no| SessionExpired[Emit session_expired]
+  SessionExpired --> Close[Close client connection]
+```
+
 ### Public app
 
 The public app listens on `API_PORT_PUBLIC` or `3000` when the variable is not
@@ -260,6 +324,11 @@ This endpoint accepts one or more `chatUuid` query parameters, opens an SSE
 stream, emits heartbeat events, binds the local RabbitMQ queue to each requested
 chat routing key, and fans matching notification events out to the connected
 client.
+
+The SSE request is authenticated before the stream is opened. While the stream
+is open, `NotificationService` revalidates the same TIM token every
+`TIM_TOKEN_REVALIDATION_INTERVAL_MS`. If revalidation fails, the service emits a
+final `session_expired` SSE event and closes the client connection.
 
 ### Private app
 
@@ -278,17 +347,125 @@ app validates the body and publishes accepted events to RabbitMQ. `GLOBAL`
 events are published with the `global` routing key, while `CHAT` events require
 `recipientUuid` and are published with `channel.chat.<recipientUuid>`.
 
+The private endpoint is also protected by TIM JWT authentication.
+
+### Reserved service event types
+
+The service owns the following SSE event type keywords. They can be emitted by
+the public SSE stream, but cannot be published through the private endpoint.
+Private publish validation is case-insensitive after trimming whitespace.
+
+| Type keyword | Description |
+| --- | --- |
+| `heartbeat` | Internal SSE keep-alive event emitted immediately after connection and then every 30 seconds while a client connection is open. |
+| `session_expired` | Internal SSE event emitted before closing a client connection when TIM token revalidation fails. |
+
+---
+
 ## Environment variables
 
 The API loads `api/config/<NODE_ENV>.env` and also reads process environment
 values. `NODE_ENV` defaults to `development` when it is not set.
 
-| Variable | Required | Description |
-| --- | --- | --- |
-| `API_CORS_ORIGIN` | Required | CORS origin value passed to `enableCors`; comma-separated values are treated as multiple allowed origins. |
-| `API_DOCUMENTATION_ENABLED` | Required | Boolean flag that enables Swagger documentation at `/documentation` on each app. |
-| `API_PORT_PUBLIC` | Optional | Port for the public app; defaults to `3000`. |
-| `API_PORT_PRIVATE` | Optional | Port for the private app; defaults to `3001`. |
-| `RABBITMQ_URL` | Required | AMQP/AMQPS connection URL used by RabbitMQ clients; can include query options such as `heartbeat=30`. |
-| `RABBITMQ_PREFIX` | Optional | Prefix for RabbitMQ exchange and queue names, useful for separating environments. |
-| `NODE_ENV` | Optional | Selects the config file from `api/config/<NODE_ENV>.env`; defaults to `development`. |
+| Variable | Required | Production example | Description |
+| --- | --- | --- | --- |
+| `NODE_ENV` | Optional | `production` | Selects `api/config/<NODE_ENV>.env`; defaults to `development`. |
+| `API_CORS_ORIGIN` | Required | `https://app.example.com,https://admin.example.com` | Comma-separated allowed browser origins; do not add spaces between values and avoid `*` in production. |
+| `API_DOCUMENTATION_ENABLED` | Required | `false` | Enables Swagger at `/documentation` on each app. Enable it for production testing; otherwise keep it disabled. |
+| `API_PORT_PUBLIC` | Optional | `3000` | Public API and SSE port; defaults to `3000`. |
+| `API_PORT_PRIVATE` | Optional | `3001` | Private API port; defaults to `3001`. |
+| `TIM_URL` | Required | `http://tim:8085` | Base URL of the TIM service, resolvable and reachable from the API container; must use `http` or `https`. |
+| `TIM_JWT_COOKIE_NAMES` | Required | `JWTTOKEN,chatJwt,customJwtCookie,customSmaxJwtCookie,userJwt` | Comma-separated JWT cookie names used for TIM authentication; the first name is used in Swagger cookie auth. |
+| `TIM_TOKEN_REVALIDATION_INTERVAL_MS` | Required | `5000` | Interval, in milliseconds, for revalidating TIM tokens. |
+| `RABBITMQ_URL` | Required | `amqps://user:password@rabbitmq.example:5671/vhost?heartbeat=30` | AMQP/AMQPS connection URL. Production Docker Compose uses its included RabbitMQ service by default; change the URL when using an external or managed instance. |
+| `RABBITMQ_PREFIX` | Optional | `production` | Use `production` to isolate production RabbitMQ resources, or leave it empty when no prefix is needed. |
+
+---
+
+## Architectural ToDo: TIM token validation load
+
+- `NotificationService` currently validates JWT tokens separately for each
+  active session.
+- Under higher load, this creates redundant validation traffic to TIM because
+  each active session can trigger its own TIM request for token state that could
+  be checked more efficiently in bulk.
+- Define a cleaner token-state synchronization contract with TIM. Two options
+  should be discussed:
+  - notifications service sends the currently active session tokens to TIM in a
+    single request and receives validation or blacklist status for each token;
+  - TIM returns or publishes the set of blacklisted tokens, and notifications
+    service matches them against active sessions.
+- In both cases, `NotificationService` should treat TIM as the source of truth
+  for token revocation. When an active session token is blacklisted, close the
+  related client connection.
+
+---
+
+## Production deployment
+
+### Prerequisites
+
+The service requires:
+
+- A container runtime or Kubernetes cluster capable of running `linux/amd64` images
+- A reachable RabbitMQ instance
+- A reachable TIM instance for JWT validation
+- Two exposed HTTP ports:
+  - `3000` — public API
+  - `3001` — private API
+
+Both APIs run in the same container process.
+
+### Required environment variables
+
+Production environment values are defined in `api/config/production.env` and
+loaded by `api/docker-compose.yml`. Values declared directly in the Docker
+Compose environment override values from the environment file.
+
+The current `api/config/production.env` sets `TIM_URL=http://localhost:8085`.
+The production Docker Compose configuration does not run TIM, so DevOps must
+replace this value with the URL of a TIM service reachable from the API
+container before deployment.
+
+See [Environment variables](#environment-variables) for the complete
+configuration reference and production examples.
+
+Do not use `localhost` in `TIM_URL` or `RABBITMQ_URL` unless that dependency
+runs inside the same container. In Docker Compose or Kubernetes, use the
+dependency's service or DNS name.
+
+Store RabbitMQ credentials in the deployment platform's secret manager. Do not
+commit them to the repository.
+
+### Production Docker Compose
+
+The production Docker Compose configuration is `api/docker-compose.yml`. From
+the `api` directory, build and start it with:
+
+```sh
+docker compose -f docker-compose.yml up --build -d
+```
+
+### Networking and ingress
+
+Route public traffic only to port `3000`. Port `3001` contains private
+endpoints and must only be reachable by trusted internal services.
+
+### Post-deployment verification
+
+1. Confirm that both `/health` endpoints return a successful response.
+2. Confirm that the API logs show a successful RabbitMQ connection.
+3. Confirm that a request authenticated with a valid TIM JWT succeeds.
+
+### Deployment notes
+
+- All replicas must use the same RabbitMQ exchange prefix for the same
+  environment.
+- Use different `RABBITMQ_PREFIX` values for development, staging, and
+  production.
+- RabbitMQ must be available during application startup.
+- Graceful termination should allow existing SSE connections to close before
+  the container is stopped.
+- Production RabbitMQ should use authentication.
+
+---

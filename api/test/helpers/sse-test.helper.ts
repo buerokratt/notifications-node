@@ -7,6 +7,7 @@ import type { EventSourceMessage } from 'eventsource-parser';
 import type { App } from 'supertest/types';
 
 type SseQuery = Record<string, string | readonly string[]>;
+type SseHeaders = Record<string, string>;
 
 type SseEventWaiter = {
   readonly resolve: (event: SseEvent) => void;
@@ -28,7 +29,12 @@ export type SseStream = {
 const SSE_WAIT_TIMEOUT_MS = 15_000;
 const SSE_CLOSE_CLEANUP_GRACE_MS = 500;
 
-export const openSseStream = async (app: INestApplication<App>, path: string, query: SseQuery): Promise<SseStream> => {
+export const openSseStream = async (
+  app: INestApplication<App>,
+  path: string,
+  query: SseQuery,
+  headers: SseHeaders = {},
+): Promise<SseStream> => {
   const server = app.getHttpServer() as Server;
   const address = server.address();
 
@@ -57,6 +63,7 @@ export const openSseStream = async (app: INestApplication<App>, path: string, qu
       {
         headers: {
           Accept: 'text/event-stream',
+          ...headers,
         },
         hostname: '127.0.0.1',
         path: requestPath,

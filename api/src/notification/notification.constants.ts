@@ -1,2 +1,7 @@
 export const SSE_HEARTBEAT_EVENT_TYPE = 'heartbeat';
 export const SSE_HEARTBEAT_INTERVAL_MS = 30_000;
+export const SSE_SESSION_EXPIRED_EVENT_TYPE = 'session_expired';
+export const SSE_RESERVED_NOTIFICATION_EVENT_TYPES = [
+  SSE_HEARTBEAT_EVENT_TYPE,
+  SSE_SESSION_EXPIRED_EVENT_TYPE,
+] as const;
