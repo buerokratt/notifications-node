@@ -1,0 +1,27 @@
+name: api-build
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened, synchronize]
+    paths:
+      - api/**
+      - .github/**
+
+jobs:
+  api-build:
+    name: api-build
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        uses: ./.github/actions/pnpm-install
+
+      - name: Build
+        run: pnpm run build

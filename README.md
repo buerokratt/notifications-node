@@ -1,1 +1,1 @@
-# notificaations-node
+# notifications-node

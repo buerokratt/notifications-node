@@ -1,0 +1,16 @@
+name: buerokratt-notification-node
+
+services:
+  api:
+    container_name: buerokratt-notification-node
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: buerokratt-notification-node:latest
+    env_file:
+      - ./config/production.env
+    ports:
+      - "3000:3000"
+    restart: always
