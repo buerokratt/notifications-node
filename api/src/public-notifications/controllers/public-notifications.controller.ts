@@ -2,11 +2,11 @@ import { Controller, MessageEvent, Query, Sse } from '@nestjs/common';
 import { ApiBadRequestResponse, ApiOkResponse, ApiOperation } from '@nestjs/swagger';
 import { Observable } from 'rxjs';
 
-import { NotificationEventsQueryDto } from '../dtos';
-import { NotificationService } from '../services';
+import { NotificationEventsQueryDto } from '../../notification/dtos';
+import { NotificationService } from '../../notification/services';
 
 @Controller({ version: '1', path: '/notifications' })
-export class NotificationController {
+export class PublicNotificationsController {
   constructor(private readonly notificationService: NotificationService) {}
 
   @Sse('/events')
@@ -17,7 +17,7 @@ export class NotificationController {
   @ApiBadRequestResponse({
     description: 'Invalid or missing chatUuid query parameter',
   })
-  public subscribeToEvents(@Query() query: NotificationEventsQueryDto): Observable<MessageEvent> {
+  public subscribeToEvents(@Query() query: NotificationEventsQueryDto): Promise<Observable<MessageEvent>> {
     return this.notificationService.getEventSse(query);
   }
 }

@@ -1,7 +1,9 @@
+import { NotificationRecipient } from '../enums';
+
 export type RabbitmqNotificationEvent = {
-  readonly eventId: string;
-  readonly chatUuid?: string;
-  readonly channelId?: string;
+  readonly eventUuid: string;
+  readonly recipient: NotificationRecipient;
+  readonly recipientUuid?: string;
   readonly type: string;
-  readonly payload: unknown;
+  readonly payload: Record<string, unknown>;
 };
