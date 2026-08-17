@@ -10,4 +10,8 @@ export type NotificationData<TPayload = Record<string, unknown>> = {
       readonly recipient: 'CHAT';
       readonly recipientUuid: string;
     }
+  | {
+      readonly recipient: 'USER';
+      readonly recipientUuid: string;
+    }
 );
