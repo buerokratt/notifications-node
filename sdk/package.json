@@ -19,6 +19,11 @@
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js",
       "default": "./dist/react.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js",
+      "default": "./dist/vite.js"
     }
   },
   "files": [
@@ -39,7 +44,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "prebuild": "pnpm run clean",
-    "build": "tsc",
+    "build": "tsc && tsc -p tsconfig.worker.json",
     "format": "prettier --write \"{src,test}/**/*.{ts,tsx}\" \"vitest.config.ts\"",
     "format:check": "prettier --check \"{src,test}/**/*.{ts,tsx}\" \"vitest.config.ts\"",
     "lint": "eslint \"{src,test}/**/*.{ts,tsx}\" --fix",
@@ -53,16 +58,21 @@
     "test-app:install": "pnpm run build && pnpm pack --out ../test-app/notifications-sdk.tgz && pnpm --dir ../test-app add ./notifications-sdk.tgz"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": ">=18",
+    "vite": ">=4.4.9"
   },
   "peerDependenciesMeta": {
     "react": {
+      "optional": true
+    },
+    "vite": {
       "optional": true
     }
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@testing-library/react": "^16.3.0",
+    "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@typescript/native": "npm:typescript@^7.0.2",
@@ -79,6 +89,7 @@
     "react-dom": "^19.2.4",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
     "typescript-eslint": "^8.65.0",
+    "vite": "^8.2.0",
     "vitest": "^4.0.18"
   },
   "engines": {

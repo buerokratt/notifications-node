@@ -127,4 +127,14 @@ export default defineConfig(
       ],
     },
   },
+  {
+    files: ['src/worker/**/*.ts'],
+    languageOptions: {
+      globals: globals.serviceworker,
+      parserOptions: {
+        project: ['./tsconfig.worker.json'],
+        tsconfigRootDir: __dirname,
+      },
+    },
+  },
 );

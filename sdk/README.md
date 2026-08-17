@@ -5,7 +5,7 @@ server-sent events (SSE).
 
 The SDK:
 
-- connects one browser client to notifications for one or more chats;
+- connects one browser client to global and authenticated-user notifications, optionally for one or more chats;
 - sends the browser's cookies with the request;
 - parses SSE messages into typed notification events;
 - exposes React hooks for named, filtered, or catch-all event subscriptions;
@@ -18,12 +18,17 @@ React is the recommended integration. A shorter framework-agnostic example is in
 ## Requirements
 
 - React 18 or newer when using the React bindings
-- A browser environment with `fetch`, `ReadableStream`, `TextDecoderStream`, and `AbortController`
+- A browser environment with `fetch`, `ReadableStream`, `TextDecoderStream`, `AbortController`, and `atob`
+- For optional Web Push: browser support for `Notification`, `navigator.serviceWorker`, `PushManager`,
+  `TextEncoder`, and `btoa`
 - A notifications API that exposes `/public/v1/notifications/events`
 - Browser credentials accepted by the notifications API
 
 The SDK is ESM-only. React is declared as an optional peer dependency; install it when using the
 React-first integration documented here.
+
+Web Push and service workers require a secure context. Use HTTPS in deployed environments; browsers
+may make development exceptions for localhost.
 
 ## Installation
 
@@ -35,7 +40,7 @@ or
 npm i @buerokratt-ria/notifications
 ```
 
-The package has two public entry points:
+The package has three public entry points:
 
 ```ts
 // Framework-agnostic client and shared types
@@ -43,6 +48,9 @@ import { createNotificationsClient } from '@buerokratt-ria/notifications';
 
 // React provider, hooks, and React-specific types
 import { NotificationsProvider } from '@buerokratt-ria/notifications/react';
+
+// Optional Vite integration for deploying the service worker
+import { notificationsServiceWorker } from '@buerokratt-ria/notifications/vite';
 ```
 
 ## React quick start
@@ -60,6 +68,7 @@ import { NotificationsProvider } from '@buerokratt-ria/notifications/react';
 
 const notificationsClient = createNotificationsClient({
   apiBaseUrl: 'https://notifications.example.com',
+  vapidPublicKey: '<public VAPID key supplied by application configuration>',
 });
 
 export function NotificationsRoot({ children }: PropsWithChildren) {
@@ -74,16 +83,102 @@ export function NotificationsRoot({ children }: PropsWithChildren) {
 The package exports the `createNotificationsClient` factory, not a preconfigured `notificationsClient`
 instance. The application owns that instance because it supplies the environment-specific API URL.
 
-`apiBaseUrl` must be a non-empty absolute URL without a trailing slash. The client does not connect
-when it is created.
+`apiBaseUrl` must be a non-empty absolute URL without a trailing slash. `vapidPublicKey` must be a
+non-empty, base64url-encoded, uncompressed P-256 public key. Empty values, a trailing-slash API URL,
+and an invalid VAPID key fail when the client is created, before any permission prompt. The API URL is
+resolved when `connect()` is called. The client does not connect when it is created.
 
 Using a notifications hook outside the provider throws an error. Nested components share the exact
 client passed to the provider.
 
-### 2. Connect for the active chats
+### 2. Deploy the default service worker
 
-Connect when a component needs notifications and disconnect during effect cleanup. One connection can
-subscribe to a single chat UUID or several chat UUIDs.
+Vite applications can serve the worker during development and emit it into the production output
+automatically with the optional SDK integration:
+
+```ts
+import { defineConfig } from 'vite';
+import { notificationsServiceWorker } from '@buerokratt-ria/notifications/vite';
+
+export default defineConfig({
+  plugins: [notificationsServiceWorker()],
+});
+```
+
+The plugin deploys the worker at the fixed same-origin URL
+`/notifications-service-worker.js`. The browser core remains independent of Vite and React, and
+importing the browser SDK does not execute or register the worker.
+
+Non-Vite applications must copy the package's standalone worker:
+
+```text
+node_modules/@buerokratt-ria/notifications/dist/notifications-service-worker.js
+```
+
+to the web root so it is deployed as:
+
+```text
+/notifications-service-worker.js
+```
+
+For an S3 or CDN deployment, include the worker beside the application's root `index.html`, serve it
+with a JavaScript content type, and do not redirect the worker request to the SPA entry point. Because
+the worker is registered from the web root with the default scope, it controls the root scope. A
+restrictive `Service-Worker-Allowed` response header can cause registration to fail.
+
+The default worker displays the API payload's non-empty `notification.title` and `notification.body`.
+Custom worker behavior is a future extension point; interoperability with replacement workers is not
+part of phase one.
+
+### 3. Enable Web Push from an explicit user action
+
+Applications control the notification permission prompt. Call `enableWebPush()` from an intentional
+user action such as a button; do not call it automatically on page load while permission is `default`.
+
+```tsx
+import { useNotificationsClient } from '@buerokratt-ria/notifications/react';
+
+export function EnableNotificationsButton() {
+  const client = useNotificationsClient();
+
+  const enable = async () => {
+    const result = await client.enableWebPush();
+
+    if (result.status === 'denied') {
+      console.info('Notification permission was not granted');
+    } else if (result.status === 'unsupported') {
+      console.info('This browser does not support Web Push');
+    }
+  };
+
+  return <button onClick={() => void enable()}>Enable notifications</button>;
+}
+```
+
+`denied` and `unsupported` are normal results. Worker registration, Push API, or provider failures
+reject the promise with an error. Concurrent enablement calls share one operation, and a successful
+subscription is retained for later connections.
+
+### 4. Connect, optionally for active chats
+
+Web Push is optional. `connect()` opens the SSE connection whether notifications are enabled, denied,
+or unsupported, and it never prompts for permission. If you want Web Push, enable it separately from
+an explicit user action before connecting so the initial SSE request can include the subscription. A
+Web Push failure must not prevent the application from connecting SSE. Without arguments, the connection
+receives global notifications and notifications for the authenticated user when the API recognizes a user
+identity cookie. One connection can additionally subscribe to a single chat UUID or several chat UUIDs.
+
+```ts
+notificationsClient.connect();
+```
+
+To include chat notifications:
+
+```ts
+notificationsClient.connect({ chatUuids });
+```
+
+When a component owns an active connection, disconnect during effect cleanup:
 
 ```tsx
 // chat-notifications.tsx
@@ -98,9 +193,7 @@ export function ChatNotifications({ chatUuids }: ChatNotificationsProps) {
   const { connect, disconnect } = useNotificationsClient();
 
   useEffect(() => {
-    if (chatUuids.length === 0) return;
-
-    connect({ chatUuids: [...chatUuids] });
+    connect(chatUuids.length === 0 ? undefined : { chatUuids });
 
     return disconnect;
   }, [chatUuids, connect, disconnect]);
@@ -110,16 +203,17 @@ export function ChatNotifications({ chatUuids }: ChatNotificationsProps) {
 ```
 
 Mount this connection-owning component once for the relevant application or route. Calling `connect`
-with a different chat set replaces the current stream. Equivalent chat sets are deduplicated and do
-not replace the stream.
+with a different chat set replaces the current stream. Calls without chats and equivalent chat sets are
+deduplicated and do not replace the stream.
 
 `disconnect` closes the stream, cancels queued automatic retries, clears the remembered chat set, and
-sets the status to `disconnected`.
+sets the status to `disconnected`. It deliberately keeps the browser Push subscription so a later
+connection can reuse it; it does not call `PushSubscription.unsubscribe()`.
 
 > The `chatUuids` array should have a stable reference when its contents have not changed. For example,
 > derive it with `useMemo` instead of creating a new array during every render.
 
-### 3. Handle a named event
+### 5. Handle a named event
 
 Use `useNotificationEvent` when a component cares about one event type. Pass the expected event data
 type as its generic parameter.
@@ -244,21 +338,29 @@ event type when only application events are relevant.
 
 ## Authentication and browser behavior
 
-The client requests this endpoint for the selected chats:
+The client requests this endpoint, adding repeated `chatUuid` parameters only for selected chats:
 
 ```http
-GET <apiBaseUrl>/public/v1/notifications/events?chatUuid=<chatUuid>
+GET <apiBaseUrl>/public/v1/notifications/events[?chatUuid=<chatUuid>]
 Accept: text/event-stream
+X-Buerokratt-Web-Push-Subscription: <base64url PushSubscription JSON, when enabled>
 ```
 
 It uses `fetch` with `credentials: 'include'`; applications do not pass a token to the SDK. The browser
 must already have the authentication cookie expected by the notifications API.
 
+When Web Push is enabled, the subscription header is included on initial and retried SSE requests. It
+is an unpadded base64url encoding of the complete JSON returned by the browser's
+`PushSubscription.toJSON()` method. The standard representation includes `endpoint`, `expirationTime`,
+and the `auth` and `p256dh` keys. Without a subscription—including when permission is denied or Web
+Push is unsupported—the SSE connection still works and omits this header.
+
 For a cross-origin API, configure the API's CORS and cookie attributes to allow credentialed requests
 from the frontend origin. The SDK cannot override browser cookie or CORS policy.
 
-Do not call `connect` during server rendering. Open the stream from an effect in the browser, as shown
-in the quick start.
+Do not call `connect` during server rendering. In unsupported environments, `enableWebPush()` resolves
+with `{ status: 'unsupported' }`. Open the stream from an effect in the browser, as shown in the quick
+start.
 
 ## Reconnection and errors
 
@@ -266,16 +368,49 @@ The client manages the stream lifecycle as follows:
 
 1. `connect` opens the SSE request and sets the status to `connecting`.
 2. A successful response with a readable body sets the status to `connected`.
-3. A lost stream, failed request, invalid response, or 60-second heartbeat timeout sets the status to
-   `reconnecting` and stores the failure in `state.error`.
+3. A lost stream, failed request, invalid response, or heartbeat timeout sets the status to `reconnecting`
+   and stores the failure in `state.error`. The first heartbeat starts the watchdog, and every heartbeat's
+   `heartbeatIntervalMs` sets its deadline to twice that interval.
 4. The client retries after three seconds by default. An SSE `retry` field can change that delay.
 5. HTTP 401 or a `session_expired` event sets the status to `session-expired` and stops retrying.
+
+Connection-state errors use public classes that applications can distinguish with `instanceof`:
+
+```ts
+import {
+  NotificationConnectionHttpError,
+  NotificationConnectionLostError,
+  NotificationHeartbeatTimeoutError,
+} from '@buerokratt-ria/notifications';
+
+const { error } = notificationsClient.getState();
+
+if (error instanceof NotificationConnectionHttpError) {
+  console.error('Notification endpoint returned', error.status);
+} else if (error instanceof NotificationHeartbeatTimeoutError) {
+  console.error('Notification connection timed out');
+} else if (error instanceof NotificationConnectionLostError) {
+  console.error('Notification connection failed', error.cause);
+}
+```
+
+Connection state exposes `NotificationConnectionHttpError`, `NotificationConnectionLostError`,
+`NotificationEventParseError`, `NotificationHeartbeatTimeoutError`, or
+`NotificationResponseStreamError`. Native fetch, stream, and parse failures are retained as the
+`cause` of `NotificationConnectionLostError` or `NotificationEventParseError`.
 
 Malformed JSON is not delivered as an event. The parsing error is stored on the current connection
 state and is also thrown asynchronously. Errors thrown by event listeners are likewise rethrown
 asynchronously so that one failing listener does not prevent later listeners from running.
 
 Application error monitoring should therefore observe both connection state and global browser errors.
+
+Web Push permission denial and unsupported browsers resolve normally from `enableWebPush()`. Invalid
+VAPID configuration fails during client creation, while an unusable API URL can fail when `connect()`
+constructs the endpoint. Unexpected worker registration or subscription failures reject the enablement
+promise. The default worker displays title and body only. It does not implement notification actions,
+icons, badges, custom data, background synchronization, or click navigation; the API payload does not
+provide destination data for a `notificationclick` handler.
 
 ## Using the core client without React
 
@@ -295,6 +430,7 @@ interface AssignmentPayload {
 
 const client = createNotificationsClient({
   apiBaseUrl: 'https://notifications.example.com',
+  vapidPublicKey: '<public VAPID key supplied by application configuration>',
 });
 
 const unsubscribeFromState = client.subscribeToState(() => {
@@ -309,6 +445,7 @@ const unsubscribeFromAssignments = client.subscribeToEvent<NotificationData<Assi
   },
 );
 
+// Optional: call client.enableWebPush() separately from an explicit user action.
 client.connect({
   chatUuids: ['89b39d46-bf9a-4f07-a18a-5f574c2aa738'],
 });
@@ -331,6 +468,7 @@ Creates an inert, framework-agnostic `NotificationsClient`.
 ```ts
 interface NotificationsClientConfig {
   readonly apiBaseUrl: string;
+  readonly vapidPublicKey: string;
 }
 ```
 
@@ -338,8 +476,10 @@ interface NotificationsClientConfig {
 
 | Member | Description |
 | --- | --- |
-| `connect({ chatUuids })` | Opens or replaces the stream for a string or string array of chat UUIDs. |
-| `disconnect()` | Closes the stream, cancels retries, forgets the chat set, and enters `disconnected`. |
+| `enableWebPush()` | Explicitly requests permission and creates or reuses the configured browser Push subscription. |
+| `connect()` | Opens or replaces the stream for global and authenticated-user notifications. |
+| `connect({ chatUuids })` | Also subscribes to a string or readonly string array of chat UUIDs. |
+| `disconnect()` | Closes the stream, cancels retries, forgets the chat set, and keeps the Push subscription. |
 | `reconnect()` | Reopens the last requested chat set. Does nothing if no chat set is remembered. |
 | `getState()` | Returns the current immutable `NotificationsConnectionState` snapshot. |
 | `subscribeToState(listener)` | Registers a state-change listener and returns an unsubscribe function. |
@@ -349,13 +489,16 @@ interface NotificationsClientConfig {
 The entry point also exports these types:
 
 - `NotificationData<TPayload>`: the Buerokratt event envelope, including event UUID, type, payload,
-  and either a global or chat recipient.
+  and a global, chat, or user recipient.
+- `NotificationHeartbeatData`: heartbeat payload containing `heartbeatIntervalMs`.
+- `NotificationClientError`: the union of public errors exposed through notification connection state.
 - `NotificationEvent<TData>`: the parsed SSE event as `{ type, data }`.
 - `NotificationsClient`
 - `NotificationsClientConfig`
 - `NotificationsConnectionState`
 - `NotificationsConnectionStateListener`
 - `NotificationsConnectionStatus`
+- `WebPushEnableResult`
 
 ### React entry point: `@buerokratt-ria/notifications/react`
 
@@ -365,8 +508,9 @@ Makes one `NotificationsClient` available to descendant hooks.
 
 #### `useNotificationsClient()`
 
-Returns the shared client's `connect`, `disconnect`, `reconnect`, `getState`, and `subscribeToState`
-members. Raw event subscription methods are intentionally exposed through the event hooks instead.
+Returns the shared client's `enableWebPush`, `connect`, `disconnect`, `reconnect`, `getState`, and
+`subscribeToState` members. Raw event subscription methods are intentionally exposed through the event
+hooks instead.
 
 #### `useNotificationEvent<TData>(eventType, listener)`
 
@@ -387,8 +531,10 @@ The SDK source is under `sdk/src`:
 src/
 ├── core/       Framework-agnostic client, interfaces, and types
 ├── react/      Provider, hooks, and React-specific interfaces
+├── worker/     Standalone default Web Push service worker
 ├── index.ts    Base package entry point
-└── react.ts    React subpath entry point
+├── react.ts    React subpath entry point
+└── vite.ts     Optional Vite worker-deployment entry point
 ```
 
 ### TypeScript 6 and 7 toolchain
@@ -434,7 +580,8 @@ pnpm run test:run
 pnpm run pack:check
 ```
 
-- `build` compiles both public entry points into `dist`.
+- `build` compiles the core, React, and Vite entry points and the standalone
+  `dist/notifications-service-worker.js` asset.
 - `lint:check` checks source and test files without fixing them.
 - `test:typecheck` checks the SDK test TypeScript configuration.
 - `test:run` runs the Vitest suite once.

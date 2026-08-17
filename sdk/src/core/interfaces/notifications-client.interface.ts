@@ -1,4 +1,5 @@
 import type { NotificationsConnectionStateListener } from '../types/index.js';
+import type { WebPushEnableResult } from '../types/web-push-enable-result.type.js';
 import type { NotificationEvent } from './notification-event.interface.js';
 import type { NotificationsConnectionState } from './notifications-connection-state.interface.js';
 
@@ -7,11 +8,16 @@ import type { NotificationsConnectionState } from './notifications-connection-st
  */
 export interface NotificationsClient {
   /**
-   * Opens the notification stream for one or more chats.
+   * Requests notification permission and creates or reuses a Web Push subscription.
+   */
+  readonly enableWebPush: () => Promise<WebPushEnableResult>;
+
+  /**
+   * Opens the notification stream, optionally for one or more chats.
    *
    * Replaces an active connection when its chat subscription differs.
    */
-  readonly connect: (args: { readonly chatUuids: string | string[] }) => void;
+  readonly connect: (args?: { readonly chatUuids?: string | readonly string[] }) => void;
 
   /**
    * Closes the active notification stream.

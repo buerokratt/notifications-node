@@ -3,4 +3,5 @@
  */
 export interface NotificationsClientConfig {
   readonly apiBaseUrl: string;
+  readonly vapidPublicKey: string;
 }
