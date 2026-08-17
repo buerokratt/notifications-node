@@ -1,20 +1,20 @@
-name: api-build
+name: sdk-lint
 
 on:
   pull_request:
     types: [opened, ready_for_review, reopened, synchronize]
     paths:
-      - api/**
+      - sdk/**
       - .github/**
 
 jobs:
-  api-build:
-    name: api-build
+  sdk-lint:
+    name: sdk-lint
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: api
+        working-directory: sdk
 
     steps:
       - name: Checkout
@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/pnpm-install
         with:
-          working-directory: api
+          working-directory: sdk
 
-      - name: Build
-        run: pnpm run build
+      - name: Check lint
+        run: pnpm run lint:check
