@@ -14,6 +14,7 @@ import { TimService } from '../src/tim/services';
 describe('PrivateNotificationsController (e2e)', () => {
   const NOTIFICATION_EVENTS_ENDPOINT = '/private/v1/notifications/events';
   const CHAT_UUID = 'dee9c8da-2b40-4c6a-a31e-db278b6960b1';
+  const USER_UUID = '39a67df5-61d2-4b70-8c82-3a4fda012475';
   const EVENT_UUID = 'b0e97ac6-47ef-4bbf-83a6-cf01ebae5f3d';
 
   let app: INestApplication<App>;
@@ -69,6 +70,22 @@ describe('PrivateNotificationsController (e2e)', () => {
             recipient: NotificationRecipient.Global,
             type: 'broadcast',
             payload: { message: 'System maintenance' },
+          })
+          .expect(HttpStatus.ACCEPTED);
+
+        expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
+      });
+
+      it('should publish a user notification event to RabbitMQ', async () => {
+        await request(app.getHttpServer())
+          .post(NOTIFICATION_EVENTS_ENDPOINT)
+          .set('Cookie', TIM_TEST_COOKIE)
+          .send({
+            eventUuid: EVENT_UUID,
+            recipientUuid: USER_UUID,
+            recipient: NotificationRecipient.User,
+            type: 'stream_complete',
+            payload: { isRandomPayload: true },
           })
           .expect(HttpStatus.ACCEPTED);
 
@@ -134,7 +151,7 @@ describe('PrivateNotificationsController (e2e)', () => {
           expect.objectContaining({
             statusCode: HttpStatus.BAD_REQUEST,
             error: 'Bad Request',
-            message: expect.arrayContaining(['recipientUuid must be a UUID v4 when recipient is CHAT']),
+            message: expect.arrayContaining(['recipientUuid must be a UUID v4 when recipient is one of: CHAT, USER']),
           }),
         );
         expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
@@ -179,7 +196,7 @@ describe('PrivateNotificationsController (e2e)', () => {
           expect.objectContaining({
             statusCode: HttpStatus.BAD_REQUEST,
             error: 'Bad Request',
-            message: expect.arrayContaining(['recipient must be one of the following values: GLOBAL, CHAT']),
+            message: expect.arrayContaining(['recipient must be one of the following values: CHAT, GLOBAL, USER']),
           }),
         );
         expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);

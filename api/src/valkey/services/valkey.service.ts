@@ -1,7 +1,7 @@
 import { BeforeApplicationShutdown, Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
 import { HealthIndicatorResult, HealthIndicatorService } from '@nestjs/terminus';
-import { Batch, GlideClient, type GlideReturnType, Script, TimeUnit } from '@valkey/valkey-glide';
+import { Batch, GlideClient, type GlideReturnType, InfBoundary, Script, TimeUnit } from '@valkey/valkey-glide';
 
 import { valkeyConfigFactory } from '../valkey-config.factory';
 import { VALKEY_HEALTH_KEY } from '../valkey.constants';
@@ -135,6 +135,26 @@ export class ValkeyService implements OnModuleInit, BeforeApplicationShutdown {
   public async getSetMembers(key: string): Promise<string[]> {
     const members = await this.client.smembers(key);
     return [...members].map((member) => member.toString());
+  }
+
+  /**
+   * Removes the provided members from a sorted set. Missing members are ignored.
+   */
+  public async removeSortedSetMembers(key: string, members: string[]): Promise<void> {
+    if (members.length === 0) return;
+    await this.client.zrem(key, members);
+  }
+
+  /**
+   * Prunes expired members and returns the remaining sorted set members.
+   */
+  public async getActiveSortedSetMembers(key: string, nowSeconds = Math.floor(Date.now() / 1000)): Promise<string[]> {
+    await this.client.zremRangeByScore(key, InfBoundary.NegativeInfinity, {
+      value: nowSeconds,
+      isInclusive: true,
+    });
+    const members = await this.client.zrange(key, { start: 0, end: -1 });
+    return members.map((member) => member.toString());
   }
 
   /**

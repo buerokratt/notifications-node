@@ -39,7 +39,7 @@ describe('HealthController (e2e)', () => {
         imports: [appModule],
       })
         .overrideProvider(RabbitmqService)
-        .useValue({ isHealthy: rabbitmqIsHealthyMock, subscribe: subscribeMock })
+        .useValue({ isHealthy: rabbitmqIsHealthyMock, subscribe: subscribeMock, subscribeWebPush: vi.fn() })
         .overrideProvider(ValkeyService)
         .useValue({ isHealthy: valkeyIsHealthyMock })
         .compile();

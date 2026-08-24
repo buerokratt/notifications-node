@@ -2,16 +2,26 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { HttpStatus, Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
-import webPush, { PushSubscription, WebPushError } from 'web-push';
+import webPush, { type PushSubscription, WebPushError } from 'web-push';
 
+import { NotificationRecipient } from '../../rabbitmq/enums';
 import { ValkeyService } from '../../valkey/services';
-import type { WebPushDelivery, WebPushRegistrationHandle } from '../types';
+import type {
+  WebPushChatTarget,
+  WebPushDelivery,
+  WebPushRecipientTarget,
+  WebPushRegistration,
+  WebPushRegistrationHandle,
+  WebPushUserTarget,
+} from '../types';
 import { webPushConfigFactory } from '../web-push-config.factory';
 import {
-  CLEAN_UP_CHAT_CONNECTION_SCRIPT,
-  REGISTER_CHAT_CONNECTION_SCRIPT,
+  CLEAN_UP_CONNECTION_TARGET_SCRIPT,
+  REGISTER_CONNECTION_TARGET_SCRIPT,
   REGISTER_GLOBAL_SUBSCRIPTION_SCRIPT,
+  REGISTER_USER_TARGET_SCRIPT,
   WEB_PUSH_DELIVERY_CLAIM_TTL_SECONDS_MIN,
+  WEB_PUSH_USER_INDEX_PREFIX,
   WEB_PUSH_VALKEY_KEYS,
 } from '../web-push.constants';
 
@@ -29,46 +39,40 @@ export class WebPushService implements OnModuleInit {
     webPush.setVapidDetails(this.config.vapidSubject, this.config.vapidPublicKey, this.config.vapidPrivateKey);
   }
 
-  public async registerSubscription(
-    chatUuids: string[],
-    subscription: PushSubscription,
-    expirationTimeSeconds: number,
-  ): Promise<WebPushRegistrationHandle> {
+  public async registerSubscription({
+    targets,
+    subscription,
+    expirationTimeSeconds,
+  }: WebPushRegistration): Promise<WebPushRegistrationHandle> {
     const subscriptionId = this.subscriptionId(subscription.endpoint);
-    const uniqueChatUuids = [...new Set(chatUuids)];
-    const connectionId = randomUUID();
-    const nowSeconds = Math.floor(Date.now() / 1000);
-
-    await this.valkeyService.executeScript(
-      REGISTER_GLOBAL_SUBSCRIPTION_SCRIPT,
-      [WEB_PUSH_VALKEY_KEYS.subscriptionData(subscriptionId), WEB_PUSH_VALKEY_KEYS.allSubscriptionIds],
-      [JSON.stringify(subscription), subscriptionId, expirationTimeSeconds.toString()],
+    const uniqueTargets = this.uniqueTargets(targets);
+    const connectionTargets = uniqueTargets.filter(
+      (target): target is WebPushChatTarget => target.recipient === NotificationRecipient.Chat,
     );
+    const userTarget = uniqueTargets.find(
+      (target): target is WebPushUserTarget => target.recipient === NotificationRecipient.User,
+    );
+    const connectionId = randomUUID();
+
+    await this.registerGlobalSubscription(subscriptionId, subscription, expirationTimeSeconds);
     await Promise.all(
-      uniqueChatUuids.map((chatUuid) =>
-        this.valkeyService.executeScript(
-          REGISTER_CHAT_CONNECTION_SCRIPT,
-          [
-            WEB_PUSH_VALKEY_KEYS.subscriptionChatConnectionIds(subscriptionId, chatUuid),
-            WEB_PUSH_VALKEY_KEYS.subscriptionChatUuids(subscriptionId),
-            WEB_PUSH_VALKEY_KEYS.chatSubscriptionIds(chatUuid),
-          ],
-          [connectionId, expirationTimeSeconds.toString(), nowSeconds.toString(), chatUuid, subscriptionId],
-        ),
+      connectionTargets.map((target) =>
+        this.registerConnectionTarget(subscriptionId, connectionId, target, expirationTimeSeconds),
       ),
     );
+    if (userTarget) await this.registerUserTarget(subscriptionId, userTarget, expirationTimeSeconds);
 
     return {
-      chatUuids: uniqueChatUuids,
+      connectionTargets,
       connectionId,
       subscriptionId,
     };
   }
 
-  public async unregisterChatConnections(registration: WebPushRegistrationHandle): Promise<void> {
+  public async unregisterConnectionTargets(registration: WebPushRegistrationHandle): Promise<void> {
     await Promise.all(
-      registration.chatUuids.map((chatUuid) =>
-        this.cleanUpChatConnection(registration.subscriptionId, chatUuid, registration.connectionId),
+      registration.connectionTargets.map((target) =>
+        this.cleanUpConnectionTarget(registration.subscriptionId, target, registration.connectionId),
       ),
     );
   }
@@ -87,7 +91,7 @@ export class WebPushService implements OnModuleInit {
 
     await this.forEachConcurrently(subscriptionIds, async (subscriptionId) => {
       const claimed = await this.valkeyService.setIfAbsent(
-        WEB_PUSH_VALKEY_KEYS.deliveryClaim(delivery.eventUuid, subscriptionId),
+        WEB_PUSH_VALKEY_KEYS.delivery.claim(delivery.eventUuid, subscriptionId),
         '1',
         deliveryClaimTtlSeconds,
       );
@@ -120,17 +124,76 @@ export class WebPushService implements OnModuleInit {
     });
   }
 
-  private async getApplicableSubscriptionIds(target: WebPushDelivery['target']): Promise<string[]> {
-    if (!('chatUuid' in target)) {
-      return this.valkeyService.getSetMembers(WEB_PUSH_VALKEY_KEYS.allSubscriptionIds);
-    }
+  private uniqueTargets(targets: readonly WebPushRecipientTarget[]): WebPushRecipientTarget[] {
+    return [
+      ...new Map(
+        targets.map(
+          (target) => [`${target.recipient}:${'recipientUuid' in target ? target.recipientUuid : ''}`, target] as const,
+        ),
+      ).values(),
+    ];
+  }
 
-    const subscriptionIds = await this.valkeyService.getSetMembers(
-      WEB_PUSH_VALKEY_KEYS.chatSubscriptionIds(target.chatUuid),
+  private async registerGlobalSubscription(
+    subscriptionId: string,
+    subscription: PushSubscription,
+    expirationTimeSeconds: number,
+  ): Promise<void> {
+    await this.valkeyService.executeScript(
+      REGISTER_GLOBAL_SUBSCRIPTION_SCRIPT,
+      [WEB_PUSH_VALKEY_KEYS.subscription.data(subscriptionId), WEB_PUSH_VALKEY_KEYS.subscription.allIds],
+      [JSON.stringify(subscription), subscriptionId, expirationTimeSeconds.toString()],
     );
+  }
+
+  private async registerConnectionTarget(
+    subscriptionId: string,
+    connectionId: string,
+    target: WebPushChatTarget,
+    expirationTimeSeconds: number,
+  ): Promise<void> {
+    await this.valkeyService.executeScript(
+      REGISTER_CONNECTION_TARGET_SCRIPT,
+      [
+        WEB_PUSH_VALKEY_KEYS.connection.chatIds(subscriptionId, target.recipientUuid),
+        WEB_PUSH_VALKEY_KEYS.subscription.chatUuids(subscriptionId),
+        WEB_PUSH_VALKEY_KEYS.recipient.chatSubscriptionIds(target.recipientUuid),
+      ],
+      [
+        connectionId,
+        expirationTimeSeconds.toString(),
+        Math.floor(Date.now() / 1000).toString(),
+        target.recipientUuid,
+        subscriptionId,
+      ],
+    );
+  }
+
+  private async registerUserTarget(
+    subscriptionId: string,
+    target: WebPushUserTarget,
+    expirationTimeSeconds: number,
+  ): Promise<void> {
+    await this.valkeyService.executeScript(
+      REGISTER_USER_TARGET_SCRIPT,
+      [
+        WEB_PUSH_VALKEY_KEYS.subscription.userUuid(subscriptionId),
+        WEB_PUSH_VALKEY_KEYS.recipient.userSubscriptionIds(target.recipientUuid),
+      ],
+      [subscriptionId, target.recipientUuid, expirationTimeSeconds.toString(), WEB_PUSH_USER_INDEX_PREFIX],
+    );
+  }
+
+  private async getApplicableSubscriptionIds(target: WebPushDelivery['target']): Promise<string[]> {
+    const subscriptionIds = await this.valkeyService.getActiveSortedSetMembers(this.targetSubscriptionIdsKey(target));
+    if (target.recipient === NotificationRecipient.Global) return subscriptionIds;
+
     const activeSubscriptionIds = await Promise.all(
       subscriptionIds.map(async (subscriptionId) => {
-        const isActive = await this.cleanUpChatConnection(subscriptionId, target.chatUuid);
+        const isActive =
+          target.recipient === NotificationRecipient.Chat
+            ? await this.cleanUpConnectionTarget(subscriptionId, target)
+            : await this.hasActiveUserTarget(subscriptionId, target);
         return isActive ? subscriptionId : undefined;
       }),
     );
@@ -139,11 +202,10 @@ export class WebPushService implements OnModuleInit {
   }
 
   private async getSubscription(subscriptionId: string): Promise<PushSubscription | undefined> {
-    const value = await this.valkeyService.get(WEB_PUSH_VALKEY_KEYS.subscriptionData(subscriptionId));
+    const value = await this.valkeyService.get(WEB_PUSH_VALKEY_KEYS.subscription.data(subscriptionId));
     if (!value) return;
 
     try {
-      // Subscription data is written only by registerSubscription(), so its stored shape is trusted.
       return JSON.parse(value) as PushSubscription;
     } catch {
       this.logger.warn(`Ignoring malformed stored Web Push subscription: ${subscriptionId}`);
@@ -152,39 +214,71 @@ export class WebPushService implements OnModuleInit {
   }
 
   private async removeSubscription(subscriptionId: string): Promise<void> {
-    const chatUuids = await this.valkeyService.getSetMembers(
-      WEB_PUSH_VALKEY_KEYS.subscriptionChatUuids(subscriptionId),
-    );
-
-    await Promise.all([
-      this.valkeyService.removeSetMembers(WEB_PUSH_VALKEY_KEYS.allSubscriptionIds, [subscriptionId]),
-      ...chatUuids.map((chatUuid) =>
-        this.valkeyService.removeSetMembers(WEB_PUSH_VALKEY_KEYS.chatSubscriptionIds(chatUuid), [subscriptionId]),
-      ),
+    const [chatUuids, userUuid] = await Promise.all([
+      this.valkeyService.getSetMembers(WEB_PUSH_VALKEY_KEYS.subscription.chatUuids(subscriptionId)),
+      this.valkeyService.get(WEB_PUSH_VALKEY_KEYS.subscription.userUuid(subscriptionId)),
     ]);
+    const chatTargets: WebPushChatTarget[] = chatUuids.map((recipientUuid) => ({
+      recipient: NotificationRecipient.Chat,
+      recipientUuid,
+    }));
+    const targets: WebPushRecipientTarget[] = [
+      { recipient: NotificationRecipient.Global },
+      ...chatTargets,
+      ...(userUuid ? [{ recipient: NotificationRecipient.User as const, recipientUuid: userUuid }] : []),
+    ];
+
+    await Promise.all(
+      targets.map((target) =>
+        this.valkeyService.removeSortedSetMembers(this.targetSubscriptionIdsKey(target), [subscriptionId]),
+      ),
+    );
     await this.valkeyService.delete([
-      WEB_PUSH_VALKEY_KEYS.subscriptionData(subscriptionId),
-      WEB_PUSH_VALKEY_KEYS.subscriptionChatUuids(subscriptionId),
-      ...chatUuids.map((chatUuid) => WEB_PUSH_VALKEY_KEYS.subscriptionChatConnectionIds(subscriptionId, chatUuid)),
+      WEB_PUSH_VALKEY_KEYS.subscription.data(subscriptionId),
+      WEB_PUSH_VALKEY_KEYS.subscription.chatUuids(subscriptionId),
+      WEB_PUSH_VALKEY_KEYS.subscription.userUuid(subscriptionId),
+      ...chatTargets.map((target) => WEB_PUSH_VALKEY_KEYS.connection.chatIds(subscriptionId, target.recipientUuid)),
     ]);
   }
 
-  private async cleanUpChatConnection(
+  private async cleanUpConnectionTarget(
     subscriptionId: string,
-    chatUuid: string,
+    target: WebPushChatTarget,
     connectionId?: string,
   ): Promise<boolean> {
     const result = await this.valkeyService.executeScript(
-      CLEAN_UP_CHAT_CONNECTION_SCRIPT,
+      CLEAN_UP_CONNECTION_TARGET_SCRIPT,
       [
-        WEB_PUSH_VALKEY_KEYS.subscriptionChatConnectionIds(subscriptionId, chatUuid),
-        WEB_PUSH_VALKEY_KEYS.subscriptionChatUuids(subscriptionId),
-        WEB_PUSH_VALKEY_KEYS.chatSubscriptionIds(chatUuid),
+        WEB_PUSH_VALKEY_KEYS.connection.chatIds(subscriptionId, target.recipientUuid),
+        WEB_PUSH_VALKEY_KEYS.subscription.chatUuids(subscriptionId),
+        WEB_PUSH_VALKEY_KEYS.recipient.chatSubscriptionIds(target.recipientUuid),
       ],
-      [connectionId ?? '', Math.floor(Date.now() / 1000).toString(), chatUuid, subscriptionId],
+      [connectionId ?? '', Math.floor(Date.now() / 1000).toString(), target.recipientUuid, subscriptionId],
     );
 
     return result === 1;
+  }
+
+  private async hasActiveUserTarget(subscriptionId: string, target: WebPushUserTarget): Promise<boolean> {
+    const registeredUserUuid = await this.valkeyService.get(WEB_PUSH_VALKEY_KEYS.subscription.userUuid(subscriptionId));
+    if (registeredUserUuid === target.recipientUuid) return true;
+
+    await this.valkeyService.removeSortedSetMembers(
+      WEB_PUSH_VALKEY_KEYS.recipient.userSubscriptionIds(target.recipientUuid),
+      [subscriptionId],
+    );
+    return false;
+  }
+
+  private targetSubscriptionIdsKey(target: WebPushRecipientTarget): string {
+    switch (target.recipient) {
+      case NotificationRecipient.Global:
+        return WEB_PUSH_VALKEY_KEYS.subscription.allIds;
+      case NotificationRecipient.Chat:
+        return WEB_PUSH_VALKEY_KEYS.recipient.chatSubscriptionIds(target.recipientUuid);
+      case NotificationRecipient.User:
+        return WEB_PUSH_VALKEY_KEYS.recipient.userSubscriptionIds(target.recipientUuid);
+    }
   }
 
   private async forEachConcurrently<T>(items: T[], callback: (item: T) => Promise<void>): Promise<void> {
