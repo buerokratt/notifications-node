@@ -2,6 +2,7 @@ import { HttpService } from '@nestjs/axios';
 import { HttpStatus, Inject, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import type { ConfigType } from '@nestjs/config';
 import type { Request } from 'express';
+import { decode, type JwtPayload } from 'jsonwebtoken';
 
 import { timConfigFactory } from '../tim-config.factory';
 import type { TimTokenVerificationContext } from '../types';
@@ -24,11 +25,15 @@ export class TimService {
 
     for (const cookieName of this.timConfig.jwtCookieNames) {
       const cookieValue = cookies.get(cookieName);
-      if (cookieValue) {
+      if (!cookieValue) continue;
+
+      const decodedToken = this.decodeToken(cookieValue);
+      if (decodedToken) {
         return {
           type: 'cookie',
           cookieName,
           cookieHeader: `${cookieName}=${cookieValue}`,
+          decodedToken,
         };
       }
     }
@@ -60,6 +65,17 @@ export class TimService {
     } catch (error) {
       this.logger.warn('TIM cookie token verification failed', error);
       throw new UnauthorizedException();
+    }
+  }
+
+  private decodeToken(token: string): JwtPayload | undefined {
+    try {
+      const decodedToken = decode(token);
+      if (!decodedToken || typeof decodedToken === 'string') return;
+
+      return decodedToken;
+    } catch {
+      return;
     }
   }
 
