@@ -44,9 +44,9 @@ const bootstrapApp = async ({ appType, module, port }: AppBootstrapConfig) => {
   const timConfig = app.get<ConfigType<typeof timConfigFactory>>(timConfigFactory.KEY);
 
   if (apiConfig.corsOrigin) {
-    app.enableCors({ origin: apiConfig.corsOrigin });
+    app.enableCors({ origin: apiConfig.corsOrigin, credentials: true });
   }
-
+  
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
   app.enableVersioning({ type: VersioningType.URI });
   app.enableShutdownHooks();
