@@ -132,10 +132,7 @@ describe('PublicNotificationsController (e2e)', () => {
 
     const privateModuleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule.register(AppType.Private)],
-    })
-      .overrideProvider(TimService)
-      .useValue(timMockService)
-      .compile();
+    }).compile();
 
     publicApp = publicModuleFixture.createNestApplication();
     configureApp(publicApp, AppType.Public);
@@ -233,7 +230,6 @@ describe('PublicNotificationsController (e2e)', () => {
 
           await request(privateApp.getHttpServer())
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
-            .set('Cookie', TIM_TEST_COOKIE)
             .send({
               eventUuid: EVENT_UUID,
               recipient: NotificationRecipient.Global,
@@ -242,8 +238,6 @@ describe('PublicNotificationsController (e2e)', () => {
             })
             .expect(HttpStatus.ACCEPTED);
 
-          expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
-          expect(timMockService.verifyToken).toHaveBeenCalledTimes(2);
           await expect(stream.waitForEvent(EVENT_TYPE)).resolves.toEqual({
             type: EVENT_TYPE,
             data: {
@@ -280,7 +274,6 @@ describe('PublicNotificationsController (e2e)', () => {
 
           await request(privateApp.getHttpServer())
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
-            .set('Cookie', TIM_TEST_COOKIE)
             .send({
               eventUuid: EVENT_UUID,
               recipientUuid: USER_UUID,
@@ -291,7 +284,6 @@ describe('PublicNotificationsController (e2e)', () => {
             .expect(HttpStatus.ACCEPTED);
 
           expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_USER_TEST_TOKEN_CONTEXT);
-          expect(timMockService.verifyToken).toHaveBeenCalledWith(TIM_TEST_TOKEN_CONTEXT);
           await expect(stream.waitForEvent(EVENT_TYPE)).resolves.toEqual({
             type: EVENT_TYPE,
             data: {
@@ -321,7 +313,6 @@ describe('PublicNotificationsController (e2e)', () => {
 
           await request(privateApp.getHttpServer())
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
-            .set('Cookie', TIM_TEST_COOKIE)
             .send({
               eventUuid: EVENT_UUID,
               recipient: NotificationRecipient.Global,
@@ -388,7 +379,6 @@ describe('PublicNotificationsController (e2e)', () => {
 
           await request(privateApp.getHttpServer())
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
-            .set('Cookie', TIM_TEST_COOKIE)
             .send({
               eventUuid: EVENT_UUID,
               recipientUuid: SECOND_USER_UUID,
@@ -400,7 +390,6 @@ describe('PublicNotificationsController (e2e)', () => {
 
           await request(privateApp.getHttpServer())
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
-            .set('Cookie', TIM_TEST_COOKIE)
             .send({
               eventUuid: EVENT_UUID,
               recipientUuid: USER_UUID,
@@ -459,7 +448,6 @@ describe('PublicNotificationsController (e2e)', () => {
 
           await request(privateApp.getHttpServer())
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
-            .set('Cookie', TIM_TEST_COOKIE)
             .send({
               eventUuid: EVENT_UUID,
               recipientUuid: USER_UUID,

@@ -3,14 +3,12 @@ import { ApiAcceptedResponse, ApiBadRequestResponse, ApiOperation, ApiUnauthoriz
 
 import { CreateNotificationEventBodyDto } from '../../notification/dtos';
 import { NotificationService } from '../../notification/services';
-import { TimAuthentication } from '../../tim/guards';
 
 @Controller({ version: '1', path: '/notifications' })
 export class PrivateNotificationsController {
   constructor(private readonly notificationService: NotificationService) {}
 
   @Post('/events')
-  @TimAuthentication()
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({ summary: 'Publish a notification event' })
   @ApiAcceptedResponse({
