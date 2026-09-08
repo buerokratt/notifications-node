@@ -14,6 +14,7 @@ import {
   TIM_TEST_COOKIE,
   TIM_TEST_TOKEN_CONTEXT,
   TIM_USER_TEST_COOKIE,
+  TIM_USER_TEST_ID_CODE,
   TIM_USER_TEST_TOKEN_CONTEXT,
   TimMockService,
 } from './services/tim.mock-service';
@@ -276,7 +277,7 @@ describe('PublicNotificationsController (e2e)', () => {
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
             .send({
               eventUuid: EVENT_UUID,
-              recipientUuid: USER_UUID,
+              recipientUuid: [USER_UUID],
               recipient: NotificationRecipient.User,
               type: EVENT_TYPE,
               payload: EVENT_PAYLOAD,
@@ -296,6 +297,62 @@ describe('PublicNotificationsController (e2e)', () => {
           });
         } finally {
           await stream.close();
+        }
+      });
+
+      it('should fan out one publish request to multiple user SSE streams', async () => {
+        const userStream = await openSseStream(
+          publicApp,
+          PUBLIC_NOTIFICATION_EVENTS_ENDPOINT,
+          {},
+          { Cookie: TIM_USER_TEST_COOKIE },
+        );
+        const secondUserStream = await openSseStream(
+          publicApp,
+          PUBLIC_NOTIFICATION_EVENTS_ENDPOINT,
+          {},
+          { Cookie: TIM_SECOND_USER_TEST_COOKIE },
+        );
+
+        try {
+          await Promise.all([
+            userStream.waitForEvent(SSE_HEARTBEAT_EVENT_TYPE),
+            secondUserStream.waitForEvent(SSE_HEARTBEAT_EVENT_TYPE),
+          ]);
+
+          await request(privateApp.getHttpServer())
+            .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
+            .send({
+              eventUuid: EVENT_UUID,
+              recipientUuid: [TIM_USER_TEST_ID_CODE, SECOND_USER_UUID, USER_UUID],
+              recipient: NotificationRecipient.User,
+              type: EVENT_TYPE,
+              payload: EVENT_PAYLOAD,
+            })
+            .expect(HttpStatus.ACCEPTED);
+
+          await expect(userStream.waitForEvent(EVENT_TYPE)).resolves.toEqual({
+            type: EVENT_TYPE,
+            data: {
+              eventUuid: EVENT_UUID,
+              recipientUuid: USER_UUID,
+              recipient: NotificationRecipient.User,
+              type: EVENT_TYPE,
+              payload: EVENT_PAYLOAD,
+            },
+          });
+          await expect(secondUserStream.waitForEvent(EVENT_TYPE)).resolves.toEqual({
+            type: EVENT_TYPE,
+            data: {
+              eventUuid: EVENT_UUID,
+              recipientUuid: SECOND_USER_UUID,
+              recipient: NotificationRecipient.User,
+              type: EVENT_TYPE,
+              payload: EVENT_PAYLOAD,
+            },
+          });
+        } finally {
+          await Promise.all([userStream.close(), secondUserStream.close()]);
         }
       });
 
@@ -381,7 +438,7 @@ describe('PublicNotificationsController (e2e)', () => {
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
             .send({
               eventUuid: EVENT_UUID,
-              recipientUuid: SECOND_USER_UUID,
+              recipientUuid: [SECOND_USER_UUID],
               recipient: NotificationRecipient.User,
               type: EVENT_TYPE,
               payload: { user: 'other' },
@@ -392,7 +449,7 @@ describe('PublicNotificationsController (e2e)', () => {
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
             .send({
               eventUuid: EVENT_UUID,
-              recipientUuid: USER_UUID,
+              recipientUuid: [USER_UUID],
               recipient: NotificationRecipient.User,
               type: EVENT_TYPE,
               payload: { user: 'authenticated' },
@@ -450,7 +507,7 @@ describe('PublicNotificationsController (e2e)', () => {
             .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
             .send({
               eventUuid: EVENT_UUID,
-              recipientUuid: USER_UUID,
+              recipientUuid: [USER_UUID],
               recipient: NotificationRecipient.User,
               type: EVENT_TYPE,
               payload: EVENT_PAYLOAD,
@@ -474,6 +531,65 @@ describe('PublicNotificationsController (e2e)', () => {
             expect.objectContaining({ TTL: 300 }),
           );
           expect(sendNotificationMock.mock.calls[0][0]).not.toEqual(SECOND_WEB_PUSH_SUBSCRIPTION);
+        } finally {
+          sendNotificationMock.mockRestore();
+          await Promise.all([userStream.close(), secondUserStream.close()]);
+          await cleanUpWebPushTestState();
+        }
+      });
+
+      it('should deliver Web Push to every unique user recipient from one publish request', async () => {
+        await cleanUpWebPushTestState();
+        const sendNotificationMock = vi.spyOn(webPush, 'sendNotification').mockResolvedValue({
+          statusCode: HttpStatus.CREATED,
+          body: '',
+          headers: {},
+        });
+        const userStream = await openSseStream(
+          publicApp,
+          PUBLIC_NOTIFICATION_EVENTS_ENDPOINT,
+          {},
+          {
+            Cookie: TIM_USER_TEST_COOKIE,
+            [WEB_PUSH_SUBSCRIPTION_HEADER]: WEB_PUSH_SUBSCRIPTION_HEADER_VALUE,
+          },
+        );
+        const secondUserStream = await openSseStream(
+          publicApp,
+          PUBLIC_NOTIFICATION_EVENTS_ENDPOINT,
+          {},
+          {
+            Cookie: TIM_SECOND_USER_TEST_COOKIE,
+            [WEB_PUSH_SUBSCRIPTION_HEADER]: SECOND_WEB_PUSH_SUBSCRIPTION_HEADER_VALUE,
+          },
+        );
+
+        try {
+          await Promise.all([
+            userStream.waitForEvent(SSE_HEARTBEAT_EVENT_TYPE),
+            secondUserStream.waitForEvent(SSE_HEARTBEAT_EVENT_TYPE),
+          ]);
+
+          await request(privateApp.getHttpServer())
+            .post(PRIVATE_NOTIFICATION_EVENTS_ENDPOINT)
+            .send({
+              eventUuid: EVENT_UUID,
+              recipientUuid: [TIM_USER_TEST_ID_CODE, SECOND_USER_UUID, USER_UUID],
+              recipient: NotificationRecipient.User,
+              type: EVENT_TYPE,
+              payload: EVENT_PAYLOAD,
+              webPush: {
+                title: 'User notification',
+                body: 'Every matching user should receive this once.',
+                ttl: 300,
+              },
+            })
+            .expect(HttpStatus.ACCEPTED);
+
+          await vi.waitFor(() => expect(sendNotificationMock).toHaveBeenCalledTimes(2));
+          expect(sendNotificationMock.mock.calls.map(([subscription]) => subscription)).toEqual(
+            expect.arrayContaining([WEB_PUSH_SUBSCRIPTION, SECOND_WEB_PUSH_SUBSCRIPTION]),
+          );
         } finally {
           sendNotificationMock.mockRestore();
           await Promise.all([userStream.close(), secondUserStream.close()]);

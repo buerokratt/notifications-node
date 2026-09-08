@@ -1,6 +1,6 @@
 import type { NotificationEvent } from '../../core/index.js';
 
-export interface UseNotificationEventsArgs {
+export interface UseNotificationEventsArgs<TData = unknown> {
   readonly eventTypes?: '*' | readonly string[];
-  readonly listener: (event: NotificationEvent<unknown>) => void;
+  readonly listener: (event: NotificationEvent<TData>) => void;
 }

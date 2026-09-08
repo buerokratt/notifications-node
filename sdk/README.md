@@ -1,5 +1,11 @@
 # `@buerokratt-ria/notifications`
 
+### General information
+
+Changelog file could be found here [link](CHANGELOG.md)
+
+---
+
 Browser notifications client and React bindings for receiving Buerokratt notification events over
 server-sent events (SSE).
 
@@ -516,10 +522,12 @@ hooks instead.
 
 Subscribes the component to one named event and manages cleanup automatically.
 
-#### `useNotificationEvents({ eventTypes, listener })`
+#### `useNotificationEvents<TData = unknown>({ eventTypes, listener })`
 
 Subscribes the component to the catch-all stream and optionally filters it. `eventTypes` defaults to
-`'*'` and otherwise accepts a readonly string array.
+`'*'` and otherwise accepts a readonly string array. Set `TData` when all selected event types share
+the same data shape; leave it as `unknown` for catch-all listeners or event types with different data
+shapes.
 
 The React entry point also exports the `UseNotificationEventsArgs` type.
 
@@ -536,6 +544,24 @@ src/
 ├── react.ts    React subpath entry point
 └── vite.ts     Optional Vite worker-deployment entry point
 ```
+
+### Publishing to npm
+
+From the repository root, publish the package manually with:
+
+```sh
+cd sdk
+pnpm publish
+```
+
+Before each release, increment the `version` in `sdk/package.json`. The publishing account must
+have permission to publish under the `@buerokratt-ria` npm scope. The package is configured for
+public access, and `pnpm publish` uses the npm registry unless another registry is selected in the
+package manager configuration.
+
+The `prepublishOnly` hook runs `pnpm run build` before upload. The build clears and regenerates
+`dist`, which is the content included in the published package. Use `pnpm run pack:check` to inspect
+the package archive without publishing it.
 
 ### TypeScript 6 and 7 toolchain
 
@@ -585,8 +611,8 @@ pnpm run pack:check
 - `lint:check` checks source and test files without fixing them.
 - `test:typecheck` checks the SDK test TypeScript configuration.
 - `test:run` runs the Vitest suite once.
-- `pack:check` builds and creates a package archive under `/tmp` so its published contents can be
-  inspected without publishing.
+- `pack:check` builds and creates `sdk/.tmp/@buerokratt-ria+notifications.tgz` so its published
+  contents can be inspected without publishing. The `.tmp` directory is ignored by Git.
 
 When changing the public API, update both `src/index.ts` and `src/react.ts` as appropriate, then keep
 this README's imports and API reference aligned with the package exports in `package.json`.
