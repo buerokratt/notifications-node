@@ -18,17 +18,26 @@ export class CreateNotificationEventBodyDto {
   readonly eventUuid!: string;
 
   @Transform(({ obj, value }) => {
-    if (obj.recipient !== NotificationRecipient.User) return value;
+    if (!Array.isArray(value)) return value;
 
-    return UserRecipientUuidUtil.isValid(value) ? UserRecipientUuidUtil.normalize(value) : value;
+    const recipientUuids = value.map((recipientUuid: unknown) => {
+      if (obj.recipient !== NotificationRecipient.User) return recipientUuid;
+
+      return UserRecipientUuidUtil.isValid(recipientUuid)
+        ? UserRecipientUuidUtil.normalize(recipientUuid)
+        : recipientUuid;
+    });
+
+    return [...new Set(recipientUuids)];
   })
   @IsValidNotificationRecipientUuid(['CHAT', 'USER'])
   @ApiPropertyOptional({
     description:
-      'The recipient identifier. CHAT requires a UUID v4; USER accepts a UUID or an id code matching ^EE\\d{11}$; GLOBAL omits it.',
-    example: '6e5ad6e1-570c-4f69-99e6-ab6f28c2f8c5',
+      'The recipient identifiers. CHAT requires UUID v4 values; USER accepts UUIDs or id codes matching ^EE\\d{11}$; GLOBAL omits it.',
+    type: [String],
+    example: ['6e5ad6e1-570c-4f69-99e6-ab6f28c2f8c5'],
   })
-  readonly recipientUuid?: string;
+  readonly recipientUuid?: string[];
 
   @IsDefined()
   @IsEnum(NotificationRecipient)

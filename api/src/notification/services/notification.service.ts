@@ -57,14 +57,19 @@ export class NotificationService {
 
   public async publishNotificationEvent(body: CreateNotificationEventBodyDto): Promise<void> {
     try {
-      await this.rabbitmqService.publishEvent({
+      const event = {
         eventUuid: body.eventUuid,
         recipient: body.recipient,
-        ...(body.recipientUuid ? { recipientUuid: body.recipientUuid } : {}),
         type: body.type,
         payload: body.payload,
         ...(body.webPush ? { webPush: body.webPush } : {}),
-      });
+      };
+      const events: RabbitmqNotificationEvent[] =
+        body.recipient === NotificationRecipient.Global
+          ? [event]
+          : (body.recipientUuid ?? []).map((recipientUuid) => ({ ...event, recipientUuid }));
+
+      await this.rabbitmqService.publishEvents(events);
     } catch (error) {
       this.logger.error('Failed to publish RabbitMQ notification event', error);
       throw new ServiceUnavailableException('RabbitMQ publishing unavailable');

@@ -376,15 +376,18 @@ POST /private/v1/notifications/events
 Internal publishers post notification envelopes to this endpoint. The private
 app validates the body and publishes accepted events to RabbitMQ.
 
-| Recipient | `recipientUuid` | Routing key |
+| Recipient | `recipientUuid` | Routing key(s) |
 | --- | --- | --- |
 | `GLOBAL` | Must be omitted | `global` |
-| `CHAT` | UUID v4 | `channel.chat.<recipientUuid>` |
-| `USER` | UUID or an Estonian identifier matching `^EE\d{11}$` | `channel.user.<normalizedUserUuid>` |
+| `CHAT` | Non-empty array of UUID v4 values | `channel.chat.<recipientUuid>` for each unique value |
+| `USER` | Non-empty array of UUIDs or Estonian identifiers matching `^EE\d{11}$` | `channel.user.<normalizedUserUuid>` for each unique value |
 
-For `USER`, an Estonian identifier is normalized to the same deterministic UUID
-v5 format used for authenticated USER subscriptions before the event is
-published.
+For `CHAT` and `USER`, one accepted HTTP request publishes one RabbitMQ message
+per unique recipient. For `USER`, every Estonian identifier is normalized to the
+same deterministic UUID v5 format used for authenticated USER subscriptions,
+then the normalized recipient array is deduplicated before publishing. Each
+RabbitMQ message and downstream SSE or Web Push event still contains one scalar
+`recipientUuid`.
 
 The private endpoint is also protected by TIM JWT authentication.
 
@@ -410,7 +413,7 @@ the private event body:
 {
   "eventUuid": "b0e97ac6-47ef-4bbf-83a6-cf01ebae5f3d",
   "recipient": "USER",
-  "recipientUuid": "EE30303039914",
+  "recipientUuid": ["EE30303039914", "39a67df5-61d2-4b70-8c82-3a4fda012475"],
   "type": "new_notification",
   "payload": {},
   "webPush": {

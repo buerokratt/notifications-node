@@ -12,7 +12,9 @@ import { NotificationRecipient } from '../src/rabbitmq/enums';
 describe('PrivateNotificationsController (e2e)', () => {
   const NOTIFICATION_EVENTS_ENDPOINT = '/private/v1/notifications/events';
   const CHAT_UUID = 'dee9c8da-2b40-4c6a-a31e-db278b6960b1';
+  const SECOND_CHAT_UUID = '8f1406dd-7e13-46c8-94e5-32b617b76cfd';
   const USER_UUID = '39a67df5-61d2-4b70-8c82-3a4fda012475';
+  const SECOND_USER_UUID = '2a848522-2806-5484-871f-f7a141caf5de';
   const EVENT_UUID = 'b0e97ac6-47ef-4bbf-83a6-cf01ebae5f3d';
 
   let app: INestApplication<App>;
@@ -38,7 +40,7 @@ describe('PrivateNotificationsController (e2e)', () => {
           .post(NOTIFICATION_EVENTS_ENDPOINT)
           .send({
             eventUuid: EVENT_UUID,
-            recipientUuid: CHAT_UUID,
+            recipientUuid: [CHAT_UUID, SECOND_CHAT_UUID],
             recipient: NotificationRecipient.Chat,
             type: 'stream_complete',
             payload: { isRandomPayload: true },
@@ -63,7 +65,7 @@ describe('PrivateNotificationsController (e2e)', () => {
           .post(NOTIFICATION_EVENTS_ENDPOINT)
           .send({
             eventUuid: EVENT_UUID,
-            recipientUuid: USER_UUID,
+            recipientUuid: [USER_UUID, SECOND_USER_UUID, 'EE30303039914'],
             recipient: NotificationRecipient.User,
             type: 'stream_complete',
             payload: { isRandomPayload: true },
@@ -87,6 +89,19 @@ describe('PrivateNotificationsController (e2e)', () => {
           })
           .expect(HttpStatus.ACCEPTED);
       });
+
+      it('should accept duplicate recipient UUIDs for deduplication before publishing', async () => {
+        await request(app.getHttpServer())
+          .post(NOTIFICATION_EVENTS_ENDPOINT)
+          .send({
+            eventUuid: EVENT_UUID,
+            recipientUuid: [CHAT_UUID, CHAT_UUID],
+            recipient: NotificationRecipient.Chat,
+            type: 'stream_complete',
+            payload: { isRandomPayload: true },
+          })
+          .expect(HttpStatus.ACCEPTED);
+      });
     });
 
     describe('error', () => {
@@ -105,7 +120,78 @@ describe('PrivateNotificationsController (e2e)', () => {
           expect.objectContaining({
             statusCode: HttpStatus.BAD_REQUEST,
             error: 'Bad Request',
-            message: expect.arrayContaining(['recipientUuid must be a UUID v4 when recipient is one of: CHAT, USER']),
+            message: expect.arrayContaining([
+              'recipientUuid must be a non-empty array of UUID v4 values when recipient is one of: CHAT, USER',
+            ]),
+          }),
+        );
+      });
+
+      it(`should return ${HttpStatus.BAD_REQUEST} when a chat notification has an empty UUID array`, async () => {
+        const response = await request(app.getHttpServer())
+          .post(NOTIFICATION_EVENTS_ENDPOINT)
+          .send({
+            eventUuid: EVENT_UUID,
+            recipientUuid: [],
+            recipient: NotificationRecipient.Chat,
+            type: 'stream_complete',
+            payload: { isRandomPayload: true },
+          })
+          .expect(HttpStatus.BAD_REQUEST);
+
+        expect(response.body).toEqual(
+          expect.objectContaining({
+            statusCode: HttpStatus.BAD_REQUEST,
+            error: 'Bad Request',
+            message: expect.arrayContaining([
+              'recipientUuid must be a non-empty array of UUID v4 values when recipient is one of: CHAT, USER',
+            ]),
+          }),
+        );
+      });
+
+      it(`should return ${HttpStatus.BAD_REQUEST} when a chat notification has a scalar UUID`, async () => {
+        const response = await request(app.getHttpServer())
+          .post(NOTIFICATION_EVENTS_ENDPOINT)
+          .send({
+            eventUuid: EVENT_UUID,
+            recipientUuid: CHAT_UUID,
+            recipient: NotificationRecipient.Chat,
+            type: 'stream_complete',
+            payload: { isRandomPayload: true },
+          })
+          .expect(HttpStatus.BAD_REQUEST);
+
+        expect(response.body).toEqual(
+          expect.objectContaining({
+            statusCode: HttpStatus.BAD_REQUEST,
+            error: 'Bad Request',
+            message: expect.arrayContaining([
+              'recipientUuid must be a non-empty array of UUID v4 values when recipient is one of: CHAT, USER',
+            ]),
+          }),
+        );
+      });
+
+      it(`should return ${HttpStatus.BAD_REQUEST} when a recipient UUID array contains an invalid value`, async () => {
+        const response = await request(app.getHttpServer())
+          .post(NOTIFICATION_EVENTS_ENDPOINT)
+          .send({
+            eventUuid: EVENT_UUID,
+            recipientUuid: [CHAT_UUID, 'not-a-uuid'],
+            recipient: NotificationRecipient.Chat,
+            type: 'stream_complete',
+            payload: { isRandomPayload: true },
+          })
+          .expect(HttpStatus.BAD_REQUEST);
+
+        expect(response.body).toEqual(
+          expect.objectContaining({
+            statusCode: HttpStatus.BAD_REQUEST,
+            error: 'Bad Request',
+            message: expect.arrayContaining([
+              'recipientUuid must be a non-empty array of UUID v4 values when recipient is one of: CHAT, USER',
+            ]),
           }),
         );
       });
@@ -115,7 +201,7 @@ describe('PrivateNotificationsController (e2e)', () => {
           .post(NOTIFICATION_EVENTS_ENDPOINT)
           .send({
             eventUuid: EVENT_UUID,
-            recipientUuid: CHAT_UUID,
+            recipientUuid: [CHAT_UUID],
             recipient: NotificationRecipient.Global,
             type: 'broadcast',
             payload: { message: 'System maintenance' },

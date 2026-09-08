@@ -172,16 +172,26 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     await this.unbindRoutingKey(this.channelRoutingKey(args));
   }
 
-  public async publishEvent(event: RabbitmqNotificationEvent): Promise<void> {
-    const routingKey =
-      event.recipient === NotificationRecipient.Global
-        ? this.globalRoutingKey
-        : this.channelRoutingKey({
-            recipient: event.recipient,
-            channelId: event.recipientUuid!,
-          });
+  public async publishEvents(events: readonly RabbitmqNotificationEvent[]): Promise<void> {
+    if (!this.client || !this.publisherChannel) {
+      throw new Error('RabbitMQ publisher channel has not been initialized');
+    }
 
-    await this.publish(routingKey, event);
+    const publisherChannel = this.publisherChannel;
+
+    for (const event of events) {
+      const routingKey =
+        event.recipient === NotificationRecipient.Global
+          ? this.globalRoutingKey
+          : this.channelRoutingKey({
+              recipient: event.recipient,
+              channelId: event.recipientUuid!,
+            });
+
+      await this.publish(publisherChannel, routingKey, event);
+    }
+
+    await publisherChannel.waitForConfirms();
   }
 
   public isHealthy(): HealthIndicatorResult {
@@ -311,12 +321,11 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     this.logger.log('Publisher channel setup complete');
   }
 
-  private async publish(routingKey: string, event: RabbitmqNotificationEvent): Promise<void> {
-    if (!this.client || !this.publisherChannel) {
-      throw new Error('RabbitMQ publisher channel has not been initialized');
-    }
-
-    const publisherChannel = this.publisherChannel;
+  private async publish(
+    publisherChannel: ConfirmChannel,
+    routingKey: string,
+    event: RabbitmqNotificationEvent,
+  ): Promise<void> {
     const published = publisherChannel.publish(this.exchangeName, routingKey, Buffer.from(JSON.stringify(event)), {
       contentType: 'application/json',
       messageId: event.eventUuid,
@@ -328,8 +337,6 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
       this.logger.warn(`RabbitMQ publish buffer is full. Routing key: ${routingKey}`);
       await once(publisherChannel, 'drain');
     }
-
-    await publisherChannel.waitForConfirms();
   }
 
   private async bindRoutingKey(routingKey: string): Promise<void> {
