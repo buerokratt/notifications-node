@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "lib": ["ES2020", "WebWorker"],
+    "outDir": "dist",
+    "rootDir": "src/worker"
+  },
+  "exclude": [],
+  "include": ["src/worker/notifications-service-worker.ts"]
+}

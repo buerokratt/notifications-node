@@ -1,5 +1,12 @@
 # notifications-node
 
+## Notifications SDK
+
+The repository includes a React-first notifications SDK. See the [SDK README](sdk/README.md) for
+TypeScript examples, connection lifecycle, API reference, and maintainer guidance.
+
+> **TODO:** The SDK package is not published yet. Document the publishing process before releasing it.
+
 # /api
 
 [Production deployment](#production-deployment)
@@ -9,9 +16,10 @@
 The API exposes a server-sent events endpoint for browser clients:
 
 ```http
-GET /public/v1/notifications/events?chatUuid=<chatUuid>
+GET /public/v1/notifications/events
 ```
 
+The optional `chatUuid` query parameter subscribes the connection to a chat.
 Multiple chats can be subscribed to with repeated query values:
 
 ```http
@@ -21,25 +29,38 @@ GET /public/v1/notifications/events?chatUuid=<chatUuid>&chatUuid=<anotherChatUui
 The endpoint currently sends:
 
 - `heartbeat` events while the SSE connection is open
-- real notification events for the subscribed chats
+- `GLOBAL` notification events
+- notification events for the requested `CHAT` recipients
+- notification events for the authenticated `USER` recipient when the request
+  uses `customJwtCookie`
+
+Each heartbeat includes the interval until the next expected heartbeat:
+
+```json
+{
+  "heartbeatIntervalMs": 30000
+}
+```
 
 It does not send a separate `connected` event.
 
 ```mermaid
 flowchart TD
-  Client[Browser SSE client] -->|GET /public/v1/notifications/events?chatUuid=...| Controller[PublicNotificationsController]
+  Client[Browser SSE client] -->|GET /public/v1/notifications/events with optional chatUuid| Controller[PublicNotificationsController]
   Controller --> Service[NotificationService]
 
-  Service -->|first local subscriber for chat| Bind[RabbitMQ bind channel.chat.chatUuid]
-  Service -->|last local subscriber leaves| Unbind[RabbitMQ unbind channel.chat.chatUuid]
-  Service --> Streams[Local in-memory chat streams]
+  Service -->|first local subscriber for recipient| Bind[RabbitMQ bind channel.chat.chatUuid or channel.user.userUuid]
+  Service -->|last local subscriber leaves| Unbind[RabbitMQ unbind recipient channel]
+  Service --> Streams[Local in-memory recipient streams]
 
   Publisher[External notification publisher] -->|routing key: global| Exchange[RabbitMQ topic exchange]
   Publisher -->|routing key: channel.chat.chatUuid| Exchange
+  Publisher -->|routing key: channel.user.userUuid| Exchange
 
   Exchange -->|global binding| QueueA[Instance A queue]
   Exchange -->|global binding| QueueB[Instance B queue]
   Exchange -->|channel.chat.chatUuid binding| QueueA
+  Exchange -->|channel.user.userUuid binding| QueueA
 
   QueueA --> RabbitConsumerA[RabbitmqService instance A]
   QueueB --> RabbitConsumerB[RabbitmqService instance B]
@@ -50,7 +71,7 @@ flowchart TD
   EventServiceA -->|notification.received| NotificationA[NotificationService instance A]
   EventServiceB -->|notification.received| NotificationB[NotificationService instance B]
 
-  NotificationA -->|matching chatUuid only| Client
+  NotificationA -->|matching GLOBAL, CHAT, or USER target| Client
 ```
 
 ---
@@ -69,22 +90,25 @@ global
 Global messages are therefore delivered to every running API instance. Each
 instance can then fan the event out to its own local SSE clients if needed.
 
-Chat-specific messages use channel routing keys. In this codebase, the channel
-identifier is the chat UUID:
+Recipient-specific messages use channel routing keys:
 
 ```text
 channel.chat.<chatUuid>
+channel.user.<userUuid>
 ```
 
-When the first local SSE subscriber connects for a chat, the API instance binds
-its own queue to that chat routing key. When the last local subscriber for that
-chat disconnects, the instance unbinds that routing key.
+When the first local SSE subscriber connects for a chat or user, the API
+instance binds its own queue to that recipient routing key. When the last local
+subscriber for that recipient disconnects, the instance unbinds that routing
+key.
 
 This means:
 
 - global events go to every API instance
 - chat events go only to API instances with at least one local subscriber for
   that chat
+- user events go only to API instances with at least one local subscriber for
+  that user
 - SSE delivery after RabbitMQ is local in-memory fanout from
   `NotificationService`
 
@@ -153,14 +177,14 @@ To generate a local TIM JWT for the SSE request:
 ```sh
 curl -i -X POST "http://localhost:8085/jwt/custom-jwt-generate" \
   -H "Content-Type: application/json" \
-  -d '{"JWTName":"JWTTOKEN","expirationInMinutes":1280,"content":{"login":"EE30303039914"}}'
+  -d '{"JWTName":"chatJwt","expirationInMinutes":1280,"content":{"login":"EE30303039914"}}'
 ```
 
 To open an SSE connection locally:
 
 ```sh
 curl -N \
-  -H "Cookie: JWTTOKEN=<tim-jwt>" \
+  -H "Cookie: chatJwt=<tim-jwt>" \
   "http://127.0.0.1:3000/public/v1/notifications/events?chatUuid=dee9c8da-2b40-4c6a-a31e-db278b6960b1"
 ```
 
@@ -169,7 +193,7 @@ Replace `<tim-jwt>` with a TIM-valid JWT. The stream should emit periodic
 RabbitMQ receives matching chat events for the subscribed `chatUuid`.
 
 NB: The cookie name depends on the `TIM_JWT_COOKIE_NAMES` environment value
-order. `JWTTOKEN` is used here because it is first in `development.env`.
+order. `chatJwt` is used here because it is first in `development.env`.
 
 To stop the local stack:
 
@@ -317,13 +341,20 @@ from the global prefix.
 The public notification endpoint is:
 
 ```http
-GET /public/v1/notifications/events?chatUuid=<chatUuid>
+GET /public/v1/notifications/events
 ```
 
-This endpoint accepts one or more `chatUuid` query parameters, opens an SSE
-stream, emits heartbeat events, binds the local RabbitMQ queue to each requested
-chat routing key, and fans matching notification events out to the connected
-client.
+This endpoint opens an SSE stream and emits heartbeat and `GLOBAL` notification
+events. It optionally accepts one or more `chatUuid` query parameters and binds
+the local RabbitMQ queue to each requested chat routing key.
+
+When the request is authenticated with `customJwtCookie`, the JWT must contain a
+valid `idCode` value matching `^EE\d{11}$`. The service deterministically
+normalizes that identifier to a UUID v5, binds the corresponding USER routing
+key, and delivers events for that authenticated user. A missing or invalid
+`idCode` returns `401 Unauthorized`. Other configured TIM JWT cookies do not add
+a USER subscription; without `chatUuid`, those connections receive only
+`GLOBAL` events.
 
 The SSE request is authenticated before the stream is opened. While the stream
 is open, `NotificationService` revalidates the same TIM token every
@@ -343,11 +374,67 @@ POST /private/v1/notifications/events
 ```
 
 Internal publishers post notification envelopes to this endpoint. The private
-app validates the body and publishes accepted events to RabbitMQ. `GLOBAL`
-events are published with the `global` routing key, while `CHAT` events require
-`recipientUuid` and are published with `channel.chat.<recipientUuid>`.
+app validates the body and publishes accepted events to RabbitMQ.
+
+| Recipient | `recipientUuid` | Routing key(s) |
+| --- | --- | --- |
+| `GLOBAL` | Must be omitted | `global` |
+| `CHAT` | Non-empty array of UUID v4 values | `channel.chat.<recipientUuid>` for each unique value |
+| `USER` | Non-empty array of UUIDs or Estonian identifiers matching `^EE\d{11}$` | `channel.user.<normalizedUserUuid>` for each unique value |
+
+For `CHAT` and `USER`, one accepted HTTP request publishes one RabbitMQ message
+per unique recipient. For `USER`, every Estonian identifier is normalized to the
+same deterministic UUID v5 format used for authenticated USER subscriptions,
+then the normalized recipient array is deduplicated before publishing. Each
+RabbitMQ message and downstream SSE or Web Push event still contains one scalar
+`recipientUuid`.
 
 The private endpoint is also protected by TIM JWT authentication.
+
+### Web Push
+
+The public SSE endpoint optionally accepts a browser Push API subscription in
+the following header:
+
+```http
+X-Buerokratt-Web-Push-Subscription: <base64url-encoded PushSubscription JSON>
+```
+
+The header is not required. When it is omitted, the SSE connection works
+normally without registering Web Push. When present, the subscription is
+registered for `GLOBAL`, all requested `CHAT` recipients, and the authenticated
+`USER` recipient when available. Its lifetime is bounded by the authenticated
+JWT `exp` claim.
+
+Publishers request a push notification by adding an optional `webPush` object to
+the private event body:
+
+```json
+{
+  "eventUuid": "b0e97ac6-47ef-4bbf-83a6-cf01ebae5f3d",
+  "recipient": "USER",
+  "recipientUuid": ["EE30303039914", "39a67df5-61d2-4b70-8c82-3a4fda012475"],
+  "type": "new_notification",
+  "payload": {},
+  "webPush": {
+    "title": "New notification",
+    "body": "You have a new notification.",
+    "ttl": 300
+  }
+}
+```
+
+`webPush.title` and `webPush.body` are required when `webPush` is present.
+`webPush.ttl` is optional and controls the push provider retention time in
+seconds.
+
+The service consumes Web Push events through a dedicated durable RabbitMQ
+queue. Delivery is recipient-based, and a Valkey delivery claim prevents the
+same event from being sent more than once to the same subscription. Global and
+USER subscription indexes expire with the JWT. CHAT registrations are removed
+when their last SSE connection closes, with expiration as a fallback. Expired
+sorted-set members are pruned when indexes are read. Provider responses `404`
+and `410` remove the invalid subscription and its indexes.
 
 ### Reserved service event types
 
@@ -375,10 +462,23 @@ values. `NODE_ENV` defaults to `development` when it is not set.
 | `API_PORT_PUBLIC` | Optional | `3000` | Public API and SSE port; defaults to `3000`. |
 | `API_PORT_PRIVATE` | Optional | `3001` | Private API port; defaults to `3001`. |
 | `TIM_URL` | Required | `http://tim:8085` | Base URL of the TIM service, resolvable and reachable from the API container; must use `http` or `https`. |
-| `TIM_JWT_COOKIE_NAMES` | Required | `JWTTOKEN,chatJwt,customJwtCookie,customSmaxJwtCookie,userJwt` | Comma-separated JWT cookie names used for TIM authentication; the first name is used in Swagger cookie auth. |
+| `TIM_JWT_COOKIE_NAMES` | Required | `chatJwt,customJwtCookie,customSmaxJwtCookie,userJwt` | Comma-separated JWT cookie names used for TIM authentication; the first name is used in Swagger cookie auth. |
 | `TIM_TOKEN_REVALIDATION_INTERVAL_MS` | Required | `5000` | Interval, in milliseconds, for revalidating TIM tokens. |
 | `RABBITMQ_URL` | Required | `amqps://user:password@rabbitmq.example:5671/vhost?heartbeat=30` | AMQP/AMQPS connection URL. Production Docker Compose uses its included RabbitMQ service by default; change the URL when using an external or managed instance. |
 | `RABBITMQ_PREFIX` | Optional | `production` | Use `production` to isolate production RabbitMQ resources, or leave it empty when no prefix is needed. |
+| `VALKEY_HOST` | Required | `valkey` | Valkey hostname used by the standalone GLIDE client; must be a non-empty string. |
+| `VALKEY_PORT` | Required | `6379` | Valkey port; must be an integer from `1` through `65535`. |
+| `VALKEY_USE_TLS` | Required | `true` | Controls TLS for the Valkey connection. Use `true` for external or managed production instances; use `false` only on a trusted private network where TLS is not configured. |
+| `VALKEY_USERNAME` | Optional | `notifications` | Valkey ACL username. Supplying a username also requires a non-empty password. |
+| `VALKEY_PASSWORD` | Optional | `<secret>` | Valkey password. Empty values are treated as unset. |
+| `VALKEY_CONNECT_TIMEOUT_MS` | Required | `10000` | Valkey connection timeout in milliseconds; must be an integer of at least `1`. |
+| `VALKEY_REQUEST_TIMEOUT_MS` | Required | `5000` | Valkey request timeout in milliseconds; must be an integer of at least `1`. |
+| `WEB_PUSH_VAPID_SUBJECT` | Required | `mailto:notifications@example.com` | VAPID contact subject used to sign Web Push requests; must start with `mailto:` or `https://`. |
+| `WEB_PUSH_VAPID_PUBLIC_KEY` | Required | `<vapid-public-key>` | Non-empty VAPID public key paired with `WEB_PUSH_VAPID_PRIVATE_KEY`. |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | Required | `<vapid-private-key>` | Non-empty VAPID private key used by the server; keep it secret. |
+| `WEB_PUSH_TTL_SECONDS` | Required | `86400` | Default Web Push provider retention time in seconds when an event does not specify `webPush.ttl`; must be an integer of at least `0`. |
+| `WEB_PUSH_REQUEST_TIMEOUT_MS` | Required | `10000` | Timeout for each Web Push provider request in milliseconds; must be an integer of at least `1`. |
+| `WEB_PUSH_CONCURRENCY` | Required | `20` | Maximum number of Web Push provider deliveries processed concurrently by one delivery operation; must be an integer of at least `1`. |
 
 ---
 

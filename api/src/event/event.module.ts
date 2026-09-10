@@ -4,11 +4,13 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { EventBusType } from './enums';
 import { EVENT_MODULE_CONFIGURATION } from './event.constants';
 import { EventModuleConfiguration } from './interfaces';
-import { EventService } from './services/event.service';
+import { EventService, WebPushEventConsumerService } from './services';
 import { RabbitmqModule } from '../rabbitmq/rabbitmq.module';
+import { WebPushModule } from '../web-push/web-push.module';
 
 @Module({
-  providers: [EventService],
+  imports: [WebPushModule],
+  providers: [EventService, WebPushEventConsumerService],
   exports: [EventService],
 })
 export class EventModule {

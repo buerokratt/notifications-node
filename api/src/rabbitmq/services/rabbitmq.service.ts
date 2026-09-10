@@ -9,10 +9,12 @@ import type { Channel, ChannelModel, ConfirmChannel, ConsumeMessage, RecoveringC
 import { NotificationRecipient } from '../enums';
 import { rabbitmqConfigFactory } from '../rabbitmq-config.factory';
 import {
+  RABBITMQ_ALL_CHANNELS_ROUTING_KEY,
   RABBITMQ_CHANNEL_ROUTING_KEY_PREFIX,
   RABBITMQ_EVENTS_EXCHANGE,
   RABBITMQ_HEALTH_KEY,
   RABBITMQ_NAME_SEPARATOR,
+  RABBITMQ_WEB_PUSH_QUEUE_SUFFIX,
 } from '../rabbitmq.constants';
 import { RabbitmqEventCallback, RabbitmqNotificationEvent } from '../types';
 
@@ -29,6 +31,11 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
   // Consumes messages from this app instance's exclusive queue.
   private consumerChannel?: Channel;
   private consumerTag?: string;
+
+  // Consumes Web Push messages from a queue shared by every app instance.
+  private webPushConsumerChannel?: Channel;
+  private webPushConsumerTag?: string;
+  private webPushSubscriptionCallback?: RabbitmqEventCallback;
 
   // Publishes notification messages to the topic exchange.
   private publisherChannel?: ConfirmChannel;
@@ -51,6 +58,10 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
       this.logger.error('Failed to close RabbitMQ consumer channel', error);
     });
 
+    await this.webPushConsumerChannel?.close().catch((error) => {
+      this.logger.error('Failed to close RabbitMQ Web Push consumer channel', error);
+    });
+
     await this.publisherChannel?.close().catch((error) => {
       this.logger.error('Failed to close RabbitMQ publisher channel', error);
     });
@@ -68,6 +79,16 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
 
     this.subscriptionCallback = callback;
     await this.startSubscriptionConsumer();
+  }
+
+  public async subscribeWebPush(callback: RabbitmqEventCallback): Promise<void> {
+    if (this.webPushSubscriptionCallback) {
+      this.logger.warn('Unable to subscribe: RabbitMQ Web Push consumer has already been started');
+      throw new Error('RabbitMQ Web Push consumer has already been started');
+    }
+
+    this.webPushSubscriptionCallback = callback;
+    await this.startWebPushConsumer();
   }
 
   private async startSubscriptionConsumer(): Promise<void> {
@@ -102,6 +123,39 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     this.logger.log(`Started RabbitMQ consumer for queue: ${this.queueName}`);
   }
 
+  private async startWebPushConsumer(): Promise<void> {
+    const subscriptionCallback = this.webPushSubscriptionCallback;
+    if (!subscriptionCallback) return;
+
+    if (!this.webPushConsumerChannel) {
+      throw new Error('RabbitMQ Web Push consumer channel has not been initialized');
+    }
+
+    if (this.webPushConsumerTag) return;
+
+    const consumerChannel = this.webPushConsumerChannel;
+    const { consumerTag } = await consumerChannel.consume(
+      this.webPushQueueName,
+      async (message) => {
+        if (!message) return;
+
+        try {
+          const event = this.parseMessage(message);
+          if (event.webPush) await subscriptionCallback(event, message);
+
+          consumerChannel.ack(message);
+        } catch (error) {
+          this.logger.error('Failed to process RabbitMQ Web Push message', error);
+          consumerChannel.nack(message, false, false);
+        }
+      },
+      { noAck: false },
+    );
+
+    this.webPushConsumerTag = consumerTag;
+    this.logger.log(`Started RabbitMQ Web Push consumer for queue: ${this.webPushQueueName}`);
+  }
+
   public async bindGlobal(): Promise<void> {
     await this.bindRoutingKey(this.globalRoutingKey);
   }
@@ -118,21 +172,33 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     await this.unbindRoutingKey(this.channelRoutingKey(args));
   }
 
-  public async publishEvent(event: RabbitmqNotificationEvent): Promise<void> {
-    const routingKey =
-      event.recipient === NotificationRecipient.Global
-        ? this.globalRoutingKey
-        : this.channelRoutingKey({
-            recipient: event.recipient,
-            channelId: event.recipientUuid!,
-          });
+  public async publishEvents(events: readonly RabbitmqNotificationEvent[]): Promise<void> {
+    if (!this.client || !this.publisherChannel) {
+      throw new Error('RabbitMQ publisher channel has not been initialized');
+    }
 
-    await this.publish(routingKey, event);
+    const publisherChannel = this.publisherChannel;
+
+    for (const event of events) {
+      const routingKey =
+        event.recipient === NotificationRecipient.Global
+          ? this.globalRoutingKey
+          : this.channelRoutingKey({
+              recipient: event.recipient,
+              channelId: event.recipientUuid!,
+            });
+
+      await this.publish(publisherChannel, routingKey, event);
+    }
+
+    await publisherChannel.waitForConfirms();
   }
 
   public isHealthy(): HealthIndicatorResult {
     const indicator = this.healthIndicatorService.check(RABBITMQ_HEALTH_KEY);
-    const isConnected = Boolean(this.client && this.consumerChannel && this.publisherChannel);
+    const isConnected = Boolean(
+      this.client && this.consumerChannel && this.webPushConsumerChannel && this.publisherChannel,
+    );
 
     return isConnected ? indicator.up() : indicator.down();
   }
@@ -165,10 +231,14 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
   }
 
   private async recoveringChannelSetup(model: ChannelModel): Promise<void> {
-    await Promise.all([this.setupConsumerChannel(model), this.setupPublisherChannel(model)]);
+    await Promise.all([
+      this.setupConsumerChannel(model),
+      this.setupWebPushConsumerChannel(model),
+      this.setupPublisherChannel(model),
+    ]);
     await this.bindGlobal();
     await this.restoreQueueBindings();
-    await this.startSubscriptionConsumer();
+    await Promise.all([this.startSubscriptionConsumer(), this.startWebPushConsumer()]);
   }
 
   private async restoreQueueBindings(): Promise<void> {
@@ -206,6 +276,36 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     this.logger.log('Consumer channel setup complete');
   }
 
+  private async setupWebPushConsumerChannel(model: ChannelModel): Promise<void> {
+    this.webPushConsumerTag = undefined;
+    this.webPushConsumerChannel = await model.createChannel();
+
+    await this.webPushConsumerChannel.assertExchange(this.exchangeName, 'topic', {
+      durable: true,
+    });
+    await this.webPushConsumerChannel.assertQueue(this.webPushQueueName, {
+      durable: true,
+      exclusive: false,
+      autoDelete: false,
+    });
+    await Promise.all([
+      this.webPushConsumerChannel.bindQueue(this.webPushQueueName, this.exchangeName, this.globalRoutingKey),
+      this.webPushConsumerChannel.bindQueue(
+        this.webPushQueueName,
+        this.exchangeName,
+        RABBITMQ_ALL_CHANNELS_ROUTING_KEY,
+      ),
+    ]);
+
+    this.webPushConsumerChannel.on('error', (error) => {
+      this.logger.error('RabbitMQ Web Push consumer channel error:', error);
+    });
+    this.webPushConsumerChannel.on('close', () => {
+      this.logger.warn('RabbitMQ Web Push consumer channel closed');
+    });
+    this.logger.log('Web Push consumer channel setup complete');
+  }
+
   private async setupPublisherChannel(model: ChannelModel): Promise<void> {
     this.publisherChannel = await model.createConfirmChannel();
     await this.publisherChannel.assertExchange(this.exchangeName, 'topic', {
@@ -221,12 +321,11 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     this.logger.log('Publisher channel setup complete');
   }
 
-  private async publish(routingKey: string, event: RabbitmqNotificationEvent): Promise<void> {
-    if (!this.client || !this.publisherChannel) {
-      throw new Error('RabbitMQ publisher channel has not been initialized');
-    }
-
-    const publisherChannel = this.publisherChannel;
+  private async publish(
+    publisherChannel: ConfirmChannel,
+    routingKey: string,
+    event: RabbitmqNotificationEvent,
+  ): Promise<void> {
     const published = publisherChannel.publish(this.exchangeName, routingKey, Buffer.from(JSON.stringify(event)), {
       contentType: 'application/json',
       messageId: event.eventUuid,
@@ -238,8 +337,6 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
       this.logger.warn(`RabbitMQ publish buffer is full. Routing key: ${routingKey}`);
       await once(publisherChannel, 'drain');
     }
-
-    await publisherChannel.waitForConfirms();
   }
 
   private async bindRoutingKey(routingKey: string): Promise<void> {
@@ -286,6 +383,10 @@ export class RabbitmqService implements OnModuleInit, BeforeApplicationShutdown 
     // Queue is scoped to this notification-node instance so each app instance can
     // receive notification events and fan them out locally to SSE/WebSocket subscribers.
     return [this.exchangeName, this.instanceId].join(RABBITMQ_NAME_SEPARATOR);
+  }
+
+  private get webPushQueueName(): string {
+    return [this.exchangeName, RABBITMQ_WEB_PUSH_QUEUE_SUFFIX].join(RABBITMQ_NAME_SEPARATOR);
   }
 
   private get exchangeName(): string {

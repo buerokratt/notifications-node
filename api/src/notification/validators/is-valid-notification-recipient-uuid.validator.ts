@@ -2,10 +2,11 @@ import { isUUID, IsUUIDVersion, ValidateBy, ValidationArguments } from 'class-va
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { CreateNotificationEventBodyDto } from '../dtos';
+import { UserRecipientUuidUtil } from '../utils';
 
 /**
  * @param recipientsRequiringUuid Notification recipients that require the
- * decorated property to contain a UUID.
+ * decorated property to contain UUIDs.
  * @param uuidVersion UUID version accepted for recipients that require the
  * decorated property. Defaults to UUID v4.
  */
@@ -26,8 +27,19 @@ export const IsValidNotificationRecipientUuid = (
       validate: (value: unknown, args?: ValidationArguments): boolean => {
         const event = args?.object as CreateNotificationEventBodyDto;
 
+        if (event.recipient === NotificationRecipient.User && recipientsRequiringUuid.includes(event.recipient)) {
+          return (
+            Array.isArray(value) &&
+            value.length > 0 &&
+            value.every((recipientUuid) => UserRecipientUuidUtil.isValid(recipientUuid))
+          );
+        }
         if (recipientsRequiringUuid.includes(event.recipient)) {
-          return isUUID(value, uuidVersion);
+          return (
+            Array.isArray(value) &&
+            value.length > 0 &&
+            value.every((recipientUuid) => isUUID(recipientUuid, uuidVersion))
+          );
         }
 
         return value === undefined;
@@ -35,8 +47,11 @@ export const IsValidNotificationRecipientUuid = (
       defaultMessage: (args?: ValidationArguments): string => {
         const event = args?.object as CreateNotificationEventBodyDto;
 
+        if (event.recipient === NotificationRecipient.User && recipientsRequiringUuid.includes(event.recipient)) {
+          return 'recipientUuid must be a non-empty array of UUIDs or values matching ^EE\\d{11}$ when recipient is USER';
+        }
         if (recipientsRequiringUuid.includes(event.recipient)) {
-          return `recipientUuid must be a UUID v${uuidVersion} when ${recipientRequirementMessage}`;
+          return `recipientUuid must be a non-empty array of UUID v${uuidVersion} values when ${recipientRequirementMessage}`;
         }
 
         return 'recipientUuid must be omitted for this recipient';

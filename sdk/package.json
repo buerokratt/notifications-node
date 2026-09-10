@@ -1,0 +1,102 @@
+{
+  "name": "@buerokratt-ria/notifications",
+  "version": "0.0.1",
+  "description": "Framework-agnostic browser client and React bindings for Buerokratt notifications",
+  "license": "ISC",
+  "type": "module",
+  "packageManager": "pnpm@10.13.1",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
+      "default": "./dist/react.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js",
+      "default": "./dist/vite.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/buerokratt/notifications-node.git",
+    "directory": "sdk"
+  },
+  "homepage": "https://github.com/buerokratt/notifications-node#readme",
+  "bugs": {
+    "url": "https://github.com/buerokratt/notifications-node/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "prebuild": "pnpm run clean",
+    "build": "tsc && tsc -p tsconfig.worker.json",
+    "format": "prettier --write \"{src,test}/**/*.{ts,tsx}\" \"vitest.config.ts\"",
+    "format:check": "prettier --check \"{src,test}/**/*.{ts,tsx}\" \"vitest.config.ts\"",
+    "lint": "eslint \"{src,test}/**/*.{ts,tsx}\" --fix",
+    "lint:check": "eslint \"{src,test}/**/*.{ts,tsx}\" --max-warnings=0",
+    "prepublishOnly": "pnpm run build",
+    "pack:check": "pnpm run build && pnpm pack --json --out /tmp/notifications-sdk-pack-check.tgz",
+    "test": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:run": "vitest run",
+    "test:typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test-app:install": "pnpm run build && pnpm pack --out ../test-app/notifications-sdk.tgz && pnpm --dir ../test-app add ./notifications-sdk.tgz"
+  },
+  "peerDependencies": {
+    "react": "^17.0.0 || ^18.0.0 || ^19.0.0",
+    "vite": ">=4.4.9"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "vite": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "@vitest/coverage-v8": "^4.0.18",
+    "eslint": "^10.8.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-perfectionist": "^5.10.0",
+    "eslint-plugin-prettier": "^5.5.6",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.9.0",
+    "jsdom": "^27.4.0",
+    "prettier": "^3.9.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.65.0",
+    "vite": "^8.2.0",
+    "vitest": "^4.0.18"
+  },
+  "engines": {
+    "node": "^24.16.0",
+    "pnpm": "^10.13.1"
+  },
+  "dependencies": {
+    "eventsource-parser": "^3.1.0"
+  }
+}
