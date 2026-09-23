@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   BadRequestException,
   Injectable,
@@ -25,6 +27,8 @@ import {
 } from 'rxjs';
 import type { PushSubscription } from 'web-push';
 
+import { LifecycleService } from '../../lifecycle/services';
+import type { LifecycleConnection, LifecycleConnectionScope } from '../../lifecycle/types';
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { RabbitmqService } from '../../rabbitmq/services';
 import type { RabbitmqNotificationEvent } from '../../rabbitmq/types';
@@ -43,6 +47,11 @@ import {
 import type { ChannelRecipient, ChannelTarget, EventStreamState } from '../types';
 import { UserRecipientUuidUtil } from '../utils';
 
+type AuthenticatedUserIdentity = {
+  readonly uuid: string;
+  readonly idCode: string;
+};
+
 @Injectable()
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
@@ -50,6 +59,7 @@ export class NotificationService {
   private readonly recipientEventStreams = new Map<string, EventStreamState>();
 
   constructor(
+    private readonly lifecycleService: LifecycleService,
     private readonly rabbitmqService: RabbitmqService,
     private readonly timService: TimService,
     private readonly webPushService: WebPushService,
@@ -82,7 +92,10 @@ export class NotificationService {
     webPushSubscription?: PushSubscription,
   ): Promise<Observable<MessageEvent>> {
     const chatUuids = [...new Set(query.chatUuid ?? [])];
-    const userUuid = this.getAuthenticatedUserUuid(request);
+    const userIdentity = this.getAuthenticatedUserIdentity(request);
+    const userUuid = userIdentity?.uuid;
+    const { decodedToken } = request.timTokenVerificationContext;
+    const lifecycleConnections = this.getLifecycleConnections(request, chatUuids, decodedToken.jti, userIdentity);
     const channelTargets: ChannelTarget[] = [
       ...chatUuids.map((recipientUuid) => ({
         recipient: NotificationRecipient.Chat as const,
@@ -90,7 +103,6 @@ export class NotificationService {
       })),
       ...(userUuid ? [{ recipient: NotificationRecipient.User as const, recipientUuid: userUuid }] : []),
     ];
-    const { decodedToken } = request.timTokenVerificationContext;
     const webPushRegistration = await this.registerWebPushSubscription(
       channelTargets,
       webPushSubscription,
@@ -107,6 +119,7 @@ export class NotificationService {
         }),
       ),
     );
+    await Promise.all(lifecycleConnections.map((connection) => this.registerLifecycleConnection(connection)));
 
     return new Observable<MessageEvent>((subscriber) => {
       const closeStream = new Subject<void>();
@@ -120,7 +133,7 @@ export class NotificationService {
       const subscription = merge(
         this.globalEventStream,
         ...streams,
-        this.createHeartbeatStream(),
+        this.createHeartbeatStream(lifecycleConnections),
         this.createTokenRevalidationStream(request, closeStream),
       )
         .pipe(takeUntil(closeStream))
@@ -133,16 +146,56 @@ export class NotificationService {
       return () => {
         subscription.unsubscribe();
         closeStream.complete();
-        void Promise.all([
-          ...(webPushRegistration ? [this.webPushService.unregisterConnectionTargets(webPushRegistration)] : []),
-          ...channelTargets.map(({ recipient, recipientUuid }) =>
-            this.removeRecipientEventStreamSubscriber(recipient, recipientUuid),
-          ),
-        ]).catch((error) => {
-          this.logger.error('Failed to clean up disconnected SSE subscriber', error);
-        });
+        this.cleanupEventSseConnections(lifecycleConnections, channelTargets, webPushRegistration);
       };
     });
+  }
+
+  private cleanupEventSseConnections(
+    lifecycleConnections: readonly LifecycleConnection[],
+    channelTargets: readonly ChannelTarget[],
+    webPushRegistration?: WebPushRegistrationHandle,
+  ): void {
+    const cleanupTasks = [
+      ...lifecycleConnections.map(({ scope, connectionId }) =>
+        this.lifecycleService.removeConnection(scope, connectionId),
+      ),
+      ...channelTargets.map(({ recipient, recipientUuid }) =>
+        this.removeRecipientEventStreamSubscriber(recipient, recipientUuid),
+      ),
+    ];
+
+    if (webPushRegistration) {
+      cleanupTasks.push(this.webPushService.unregisterConnectionTargets(webPushRegistration));
+    }
+
+    void Promise.all(cleanupTasks).catch((error) => {
+      this.logger.error('Failed to clean up disconnected SSE subscriber', error);
+    });
+  }
+
+  private getLifecycleConnections(
+    request: TimAuthenticatedRequest,
+    chatUuids: readonly string[],
+    jti: string,
+    userIdentity?: AuthenticatedUserIdentity,
+  ): LifecycleConnection[] {
+    const chatLifecycleScope = this.getEndUserLifecycleScope(request, chatUuids);
+    const lifecycleConnections: LifecycleConnection[] = [];
+
+    if (chatLifecycleScope) {
+      lifecycleConnections.push({ scope: chatLifecycleScope, connectionId: randomUUID(), jti });
+    }
+    if (userIdentity) {
+      lifecycleConnections.push({
+        scope: { uuid: userIdentity.uuid, type: 'user' },
+        connectionId: randomUUID(),
+        jti,
+        userIdCode: userIdentity.idCode,
+      });
+    }
+
+    return lifecycleConnections;
   }
 
   @OnEvent(NOTIFICATION_RECEIVED_EVENT)
@@ -197,13 +250,53 @@ export class NotificationService {
     });
   }
 
-  private createHeartbeatStream(): Observable<MessageEvent> {
+  private createHeartbeatStream(connections: readonly LifecycleConnection[]): Observable<MessageEvent> {
     const createHeartbeat = (): MessageEvent => ({
       type: SSE_HEARTBEAT_EVENT_TYPE,
       data: { heartbeatIntervalMs: SSE_HEARTBEAT_INTERVAL_MS },
     });
 
-    return merge(of(createHeartbeat()), interval(SSE_HEARTBEAT_INTERVAL_MS).pipe(map(createHeartbeat)));
+    const heartbeatStream = merge(
+      of(createHeartbeat()),
+      interval(SSE_HEARTBEAT_INTERVAL_MS).pipe(map(createHeartbeat)),
+    );
+    if (connections.length === 0) return heartbeatStream;
+
+    return heartbeatStream.pipe(
+      mergeMap((heartbeat) =>
+        from(Promise.all(connections.map((connection) => this.registerLifecycleConnection(connection)))).pipe(
+          map(() => heartbeat),
+        ),
+      ),
+    );
+  }
+
+  private getEndUserLifecycleScope(
+    request: TimAuthenticatedRequest,
+    chatUuids: readonly string[],
+  ): Extract<LifecycleConnectionScope, { readonly type: 'chat' }> | undefined {
+    const { cookieName, decodedToken } = request.timTokenVerificationContext;
+    if (cookieName !== 'chatJwt') return;
+
+    const chatUuid = decodedToken['chatId'];
+    if (typeof chatUuid !== 'string' || chatUuids.length !== 1 || chatUuids[0] !== chatUuid) {
+      throw new UnauthorizedException();
+    }
+
+    return { uuid: chatUuid, type: 'chat' };
+  }
+
+  private registerLifecycleConnection(connection: LifecycleConnection): Promise<void> {
+    if ('userIdCode' in connection) {
+      return this.lifecycleService.registerConnection(
+        connection.scope,
+        connection.connectionId,
+        connection.jti,
+        connection.userIdCode,
+      );
+    }
+
+    return this.lifecycleService.registerConnection(connection.scope, connection.connectionId, connection.jti);
   }
 
   private async registerWebPushSubscription(
@@ -266,12 +359,15 @@ export class NotificationService {
     }
   }
 
-  private getAuthenticatedUserUuid(request: TimAuthenticatedRequest): string | undefined {
+  private getAuthenticatedUserIdentity(request: TimAuthenticatedRequest): AuthenticatedUserIdentity | undefined {
     const { cookieName, decodedToken } = request.timTokenVerificationContext;
     if (cookieName !== TIM_USER_IDENTITY_COOKIE_NAME) return;
 
     try {
-      return UserRecipientUuidUtil.normalizeIdCode(decodedToken.idCode);
+      const idCode = decodedToken.idCode;
+      if (typeof idCode !== 'string') throw new Error('Invalid user id code');
+
+      return { idCode, uuid: UserRecipientUuidUtil.normalizeIdCode(idCode) };
     } catch {
       throw new UnauthorizedException();
     }
