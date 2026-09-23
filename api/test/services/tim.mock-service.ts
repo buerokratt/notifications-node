@@ -12,7 +12,10 @@ export const TIM_TEST_TOKEN_CONTEXT: TimTokenVerificationContext = {
   type: 'cookie',
   cookieName: 'chatJwt',
   cookieHeader: TIM_TEST_COOKIE,
-  decodedToken: decode(TOKEN) as JwtPayload,
+  decodedToken: {
+    ...(decode(TOKEN) as JwtPayload),
+    chatId: 'dee9c8da-2b40-4c6a-a31e-db278b6960b1',
+  },
 };
 
 export const TIM_USER_TEST_ID_CODE = 'EE12345678901';
@@ -23,6 +26,7 @@ export const TIM_USER_TEST_TOKEN_CONTEXT: TimTokenVerificationContext = {
   cookieHeader: TIM_USER_TEST_COOKIE,
   decodedToken: {
     exp: 4_938_821_608,
+    jti: 'e6f1bdfa-bcd1-43f6-b7aa-d37f439c8d2a',
     idCode: TIM_USER_TEST_ID_CODE,
   },
 };
@@ -34,6 +38,7 @@ export const TIM_SECOND_USER_TEST_TOKEN_CONTEXT: TimTokenVerificationContext = {
   cookieHeader: TIM_SECOND_USER_TEST_COOKIE,
   decodedToken: {
     exp: 4_938_821_608,
+    jti: '0a15e572-5212-4f04-a795-b9a14dd1d5fe',
     idCode: 'EE10987654321',
   },
 };

@@ -26,6 +26,9 @@ export class TimTokenGuard implements CanActivate {
 
     if (!tokenVerificationContext) throw new UnauthorizedException('Missing JWT');
 
+    const { jti } = tokenVerificationContext.decodedToken;
+    if (typeof jti !== 'string' || !jti.trim()) throw new UnauthorizedException('JWT is missing JTI');
+
     await this.timService.verifyToken(tokenVerificationContext);
 
     Object.assign(request, {

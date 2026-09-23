@@ -464,6 +464,10 @@ values. `NODE_ENV` defaults to `development` when it is not set.
 | `TIM_URL` | Required | `http://tim:8085` | Base URL of the TIM service, resolvable and reachable from the API container; must use `http` or `https`. |
 | `TIM_JWT_COOKIE_NAMES` | Required | `chatJwt,customJwtCookie,customSmaxJwtCookie,userJwt` | Comma-separated JWT cookie names used for TIM authentication; the first name is used in Swagger cookie auth. |
 | `TIM_TOKEN_REVALIDATION_INTERVAL_MS` | Required | `5000` | Interval, in milliseconds, for revalidating TIM tokens. |
+| `PRESENCE_LEASE_SECONDS` | Required | `45` | Server-side end-user SSE presence lease; it must exceed the heartbeat interval. |
+| `TERMINATION_GRACE_SECONDS` | Required | `10` | Time, in seconds, to wait after the last end-user presence lease expires before the lifecycle worker logs the shadow termination decision. |
+| `LIFECYCLE_POLL_INTERVAL_MS` | Required | `500` | Interval, in milliseconds, at which the Public API worker claims due lifecycle lease checks; allowed range is 500–1000. |
+| `LIFECYCLE_CLAIM_LEASE_SECONDS` | Required | `30` | Visibility lease for a claimed lifecycle action, allowing another worker to recover it after a worker stops. |
 | `RABBITMQ_URL` | Required | `amqps://user:password@rabbitmq.example:5671/vhost?heartbeat=30` | AMQP/AMQPS connection URL. Production Docker Compose uses its included RabbitMQ service by default; change the URL when using an external or managed instance. |
 | `RABBITMQ_PREFIX` | Optional | `production` | Use `production` to isolate production RabbitMQ resources, or leave it empty when no prefix is needed. |
 | `VALKEY_HOST` | Required | `valkey` | Valkey hostname used by the standalone GLIDE client; must be a non-empty string. |
