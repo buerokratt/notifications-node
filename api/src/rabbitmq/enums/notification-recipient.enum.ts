@@ -1,4 +1,5 @@
 export enum NotificationRecipient {
-  Global = 'GLOBAL',
   Chat = 'CHAT',
+  Global = 'GLOBAL',
+  User = 'USER',
 }

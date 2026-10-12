@@ -2,6 +2,7 @@ import { isUUID, IsUUIDVersion, ValidateBy, ValidationArguments } from 'class-va
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { CreateNotificationEventBodyDto } from '../dtos';
+import { UserRecipientUuidUtil } from '../utils';
 
 /**
  * @param recipientsRequiringUuid Notification recipients that require the
@@ -26,6 +27,9 @@ export const IsValidNotificationRecipientUuid = (
       validate: (value: unknown, args?: ValidationArguments): boolean => {
         const event = args?.object as CreateNotificationEventBodyDto;
 
+        if (event.recipient === NotificationRecipient.User && recipientsRequiringUuid.includes(event.recipient)) {
+          return UserRecipientUuidUtil.isValid(value);
+        }
         if (recipientsRequiringUuid.includes(event.recipient)) {
           return isUUID(value, uuidVersion);
         }
@@ -35,6 +39,9 @@ export const IsValidNotificationRecipientUuid = (
       defaultMessage: (args?: ValidationArguments): string => {
         const event = args?.object as CreateNotificationEventBodyDto;
 
+        if (event.recipient === NotificationRecipient.User && recipientsRequiringUuid.includes(event.recipient)) {
+          return 'recipientUuid must be a UUID or match ^EE\\d{11}$ when recipient is USER';
+        }
         if (recipientsRequiringUuid.includes(event.recipient)) {
           return `recipientUuid must be a UUID v${uuidVersion} when ${recipientRequirementMessage}`;
         }

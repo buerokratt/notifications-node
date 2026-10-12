@@ -1,3 +1,4 @@
+import type { NotificationEventWebPushDto } from '../../notification/dtos';
 import { NotificationRecipient } from '../enums';
 
 export type RabbitmqNotificationEvent = {
@@ -6,4 +7,5 @@ export type RabbitmqNotificationEvent = {
   readonly recipientUuid?: string;
   readonly type: string;
   readonly payload: Record<string, unknown>;
+  readonly webPush?: NotificationEventWebPushDto;
 };

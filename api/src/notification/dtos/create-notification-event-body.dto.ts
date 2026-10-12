@@ -1,8 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsDefined, IsEnum, IsNotEmpty, IsObject, IsString, IsUUID } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import { IsDefined, IsEnum, IsNotEmpty, IsObject, IsOptional, IsString, IsUUID, ValidateNested } from 'class-validator';
 
 import { NotificationRecipient } from '../../rabbitmq/enums';
+import { UserRecipientUuidUtil } from '../utils';
 import { IsNotReservedNotificationEventType, IsValidNotificationRecipientUuid } from '../validators';
+import { NotificationEventWebPushDto } from './notification-event-web-push.dto';
 
 export class CreateNotificationEventBodyDto {
   @IsDefined()
@@ -14,10 +17,15 @@ export class CreateNotificationEventBodyDto {
   })
   readonly eventUuid!: string;
 
-  @IsValidNotificationRecipientUuid(['CHAT'])
+  @Transform(({ obj, value }) => {
+    if (obj.recipient !== NotificationRecipient.User) return value;
+
+    return UserRecipientUuidUtil.isValid(value) ? UserRecipientUuidUtil.normalize(value) : value;
+  })
+  @IsValidNotificationRecipientUuid(['CHAT', 'USER'])
   @ApiPropertyOptional({
-    description: 'The UUID of the recipient chat. Required for CHAT events and omitted for GLOBAL events.',
-    format: 'uuid',
+    description:
+      'The recipient identifier. CHAT requires a UUID v4; USER accepts a UUID or an id code matching ^EE\\d{11}$; GLOBAL omits it.',
     example: '6e5ad6e1-570c-4f69-99e6-ab6f28c2f8c5',
   })
   readonly recipientUuid?: string;
@@ -49,4 +57,11 @@ export class CreateNotificationEventBodyDto {
     example: { isRandomPayload: true },
   })
   readonly payload!: Record<string, unknown>;
+
+  @IsObject()
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => NotificationEventWebPushDto)
+  @ApiPropertyOptional({ type: NotificationEventWebPushDto })
+  readonly webPush?: NotificationEventWebPushDto;
 }

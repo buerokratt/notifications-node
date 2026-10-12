@@ -16,6 +16,8 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      valkey:
+        condition: service_healthy
     ports:
       - '3000:3000'
       - '3001:3001'
@@ -64,5 +66,36 @@ services:
       timeout: 5s
       retries: 5
 
+  valkey:
+    image: 'valkey/valkey:8-alpine'
+    command: ['valkey-server', '--appendonly', 'yes']
+    ports:
+      - 6379:6379
+    networks:
+      - bykstack
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ['CMD', 'valkey-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  valkey-admin:
+    image: 'valkey/valkey-admin:latest'
+    environment:
+      DEPLOYMENT_MODE: Web
+    depends_on:
+      valkey:
+        condition: service_healthy
+    ports:
+      - 8081:8080
+    networks:
+      - bykstack
+    restart: always
+
 networks:
   bykstack:
+
+volumes:
+  valkey-data:

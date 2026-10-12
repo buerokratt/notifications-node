@@ -3,6 +3,7 @@ import { ApiOkResponse, ApiServiceUnavailableResponse, ApiTags } from '@nestjs/s
 import { HealthCheck, HealthCheckResult, HealthCheckService } from '@nestjs/terminus';
 
 import { RabbitmqService } from '../../rabbitmq/services';
+import { ValkeyService } from '../../valkey/services';
 
 @ApiTags('health')
 @Controller({ version: VERSION_NEUTRAL, path: '/health' })
@@ -10,6 +11,7 @@ export class HealthController {
   constructor(
     private readonly healthCheckService: HealthCheckService,
     private readonly rabbitmqService: RabbitmqService,
+    private readonly valkeyService: ValkeyService,
   ) {}
 
   @Get('/')
@@ -19,6 +21,9 @@ export class HealthController {
     description: 'One or more health checks failed',
   })
   public async healthCheck(): Promise<HealthCheckResult> {
-    return this.healthCheckService.check([() => this.rabbitmqService.isHealthy()]);
+    return this.healthCheckService.check([
+      () => this.rabbitmqService.isHealthy(),
+      () => this.valkeyService.isHealthy(),
+    ]);
   }
 }
