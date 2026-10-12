@@ -1,5 +1,12 @@
 # notifications-node
 
+## Notifications SDK
+
+The repository includes a React-first notifications SDK. See the [SDK README](sdk/README.md) for
+TypeScript examples, connection lifecycle, API reference, and maintainer guidance.
+
+> **TODO:** The SDK package is not published yet. Document the publishing process before releasing it.
+
 # /api
 
 [Production deployment](#production-deployment)

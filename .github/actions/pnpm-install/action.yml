@@ -1,5 +1,10 @@
 name: Install pnpm dependencies
-description: Set up Node.js and pnpm, and install API dependencies.
+description: Set up Node.js and pnpm, then install project dependencies.
+
+inputs:
+  working-directory:
+    description: Directory containing package.json and pnpm-lock.yaml.
+    required: true
 
 runs:
   using: composite
@@ -14,9 +19,9 @@ runs:
       with:
         node-version: 24
         cache: pnpm
-        cache-dependency-path: api/pnpm-lock.yaml
+        cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
 
     - name: Install dependencies
       shell: bash
-      working-directory: api
+      working-directory: ${{ inputs.working-directory }}
       run: pnpm install --frozen-lockfile

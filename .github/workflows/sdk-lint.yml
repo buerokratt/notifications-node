@@ -1,0 +1,29 @@
+name: sdk-lint
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened, synchronize]
+    paths:
+      - sdk/**
+      - .github/**
+
+jobs:
+  sdk-lint:
+    name: sdk-lint
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        uses: ./.github/actions/pnpm-install
+        with:
+          working-directory: sdk
+
+      - name: Check lint
+        run: pnpm run lint:check

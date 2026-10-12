@@ -41,6 +41,8 @@ jobs:
 
       - name: Install dependencies
         uses: ./.github/actions/pnpm-install
+        with:
+          working-directory: api
 
       - name: Test
         run: pnpm run test:run
