@@ -1,5 +1,4 @@
 export const LIFECYCLE_EVENTS = {
-  terminationScheduled: 'lifecycle.termination.scheduled',
   pollFailed: 'lifecycle.poll.failed',
   callbackRetryScheduled: 'lifecycle.callback.retry-scheduled',
   callbackFailed: 'lifecycle.callback.failed',
@@ -35,7 +34,6 @@ export const LIFECYCLE_STATUS = {
 export const LIFECYCLE_SCHEDULE_KEY = 'lifecycle:schedule';
 export const LIFECYCLE_ACTION_KEY_PREFIX = 'lifecycle:action:';
 export const LOGOUT_ACTION_TYPE = 'csa-last-connection-disconnected';
-export const TERMINATION_ACTION_TYPE = 'chat-end-user-disconnected';
 export const LIFECYCLE_SCHEDULE_SCAN_LIMIT_MULTIPLIER = 3;
 export const LIFECYCLE_COMPLETED_ACTION_TTL_MS = 5 * 60 * 1000;
 export const LIFECYCLE_RETRY_BASE_DELAY_MS = 1_000;
@@ -43,18 +41,17 @@ export const LIFECYCLE_RETRY_MAX_DELAY_MS = 60_000;
 export const LIFECYCLE_CALLBACK_TIMEOUT_MS = 5_000;
 
 export const LIFECYCLE_SCOPE_TYPE = {
-  ChatEndUser: 'chat:end-user',
   Backoffice: 'user:backoffice',
 } as const;
 
 /**
- * Registers or renews a chat or backoffice presence lease and updates the
+ * Registers or renews a backoffice presence lease and updates the
  * scope's single lifecycle action. A new cycle token is used only when a
  * cycle starts; heartbeats and extra connections preserve the current token.
  * Processing and retry-wait actions are irreversible and are not changed.
  *
  * Valkey KEYS, in order:
- * 1. Presence sorted set for the chat or backoffice scope.
+ * 1. Presence sorted set for the backoffice scope.
  * 2. Shared lifecycle schedule sorted set.
  * 3. Lifecycle action hash for the scope.
  *
@@ -68,7 +65,7 @@ export const LIFECYCLE_SCOPE_TYPE = {
  * 7. Grace period in seconds.
  * 8. Prebuilt schedule member for the scope.
  * 9. JWT ID associated with the SSE connection.
- * 10. Backoffice user ID code from the authenticated JWT; empty for chat scopes.
+ * 10. Required backoffice user ID code from the authenticated JWT.
  *
  * Uses Valkey server time. Presence expires at its latest lease; action dueAt
  * is latest lease plus grace. Returns the computed dueAt in Unix milliseconds.
@@ -105,9 +102,7 @@ local dueAt = tonumber(latestLease[2]) + gracePeriodSeconds * 1000
 local status = redis.call('HGET', actionKey, 'status')
 if status == '${LIFECYCLE_STATUS.action.processing}'
   or status == '${LIFECYCLE_STATUS.action.retryWait}' then
-  if scopeType == '${LIFECYCLE_SCOPE_TYPE.Backoffice}' and userIdCode and userIdCode ~= '' then
-    redis.call('HSET', actionKey, 'userIdCode', userIdCode)
-  end
+  redis.call('HSET', actionKey, 'userIdCode', userIdCode)
   redis.call('HDEL', actionKey, 'actionId')
   return dueAt
 end
@@ -130,11 +125,7 @@ if newCycle then
 end
 
 redis.call('HSET', actionKey, 'jti', jti)
-if scopeType == '${LIFECYCLE_SCOPE_TYPE.Backoffice}' and userIdCode and userIdCode ~= '' then
-  redis.call('HSET', actionKey, 'userIdCode', userIdCode)
-else
-  redis.call('HDEL', actionKey, 'userIdCode')
-end
+redis.call('HSET', actionKey, 'userIdCode', userIdCode)
 
 redis.call('HSET', actionKey,
   'status', '${LIFECYCLE_STATUS.action.pending}',
@@ -151,7 +142,7 @@ return dueAt
  * Repeated removal is a no-op. Processing and retry-wait remain irreversible.
  *
  * Valkey KEYS, in order:
- * 1. Presence sorted set for the chat or backoffice scope.
+ * 1. Presence sorted set for the backoffice scope.
  * 2. Shared lifecycle schedule sorted set.
  * 3. Lifecycle action hash for the scope.
  *

@@ -20,7 +20,7 @@ import {
   LIFECYCLE_SCOPE_TYPE,
   LIFECYCLE_STATUS,
 } from '../lifecycle.constants';
-import type { ClaimedLifecycleAction, ClaimedTerminationAction, LifecycleActionScope } from '../types';
+import type { ClaimedLifecycleAction, LifecycleActionScope } from '../types';
 import { parseLifecycleScheduleMember } from '../utils';
 import { LifecycleService } from './lifecycle.service';
 
@@ -77,12 +77,7 @@ export class LifecycleWorkerService implements OnApplicationBootstrap, BeforeApp
         if (!action) continue;
         claimedCount += 1;
 
-        if (action.type === 'LOGOUT') {
-          await this.processLogout(action);
-          continue;
-        }
-
-        await this.processChatTermination(action);
+        await this.processLogout(action);
       }
     } catch (error) {
       this.logger.error(
@@ -97,31 +92,7 @@ export class LifecycleWorkerService implements OnApplicationBootstrap, BeforeApp
     }
   }
 
-  private async processChatTermination(action: ClaimedTerminationAction): Promise<void> {
-    if (action.status === LIFECYCLE_STATUS.action.processing) {
-      await this.processChatTerminationCallback(action);
-      return;
-    }
-
-    const state = await this.lifecycleService.reconcileAction(action);
-    if (state.status === LIFECYCLE_STATUS.result.terminate) {
-      await this.processChatTerminationCallback(action);
-    } else if (state.status === LIFECYCLE_STATUS.result.rescheduled) {
-      this.logger.log(
-        JSON.stringify({
-          event: LIFECYCLE_EVENTS.terminationScheduled,
-          actionId: action.actionId,
-          chatUuid: action.scope.uuid,
-          attempt: action.attempt,
-          claimToken: action.claimToken,
-          replicaId: this.lifecycleService.replicaId,
-          dueAt: state.dueAt,
-        }),
-      );
-    }
-  }
-
-  private async processLogout(action: Extract<ClaimedLifecycleAction, { type: 'LOGOUT' }>): Promise<void> {
+  private async processLogout(action: ClaimedLifecycleAction): Promise<void> {
     if (action.status === LIFECYCLE_STATUS.action.processing) {
       await this.processLogoutCallback(action);
       return;
@@ -133,25 +104,7 @@ export class LifecycleWorkerService implements OnApplicationBootstrap, BeforeApp
     }
   }
 
-  private async processChatTerminationCallback(action: ClaimedTerminationAction): Promise<void> {
-    await this.processCallback(action, () => {
-      return this.httpService.axiosRef.post(
-        this.getCallbackUrl('/notifications-node/chat/client-left', this.config.privateRouterUrl),
-        {
-          chatId: action.scope.uuid,
-          jwtId: action.jti,
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          timeout: LIFECYCLE_CALLBACK_TIMEOUT_MS,
-        },
-      );
-    });
-  }
-
-  private async processLogoutCallback(action: Extract<ClaimedLifecycleAction, { type: 'LOGOUT' }>): Promise<void> {
+  private async processLogoutCallback(action: ClaimedLifecycleAction): Promise<void> {
     await this.processCallback(action, () =>
       this.httpService.axiosRef.post(
         this.getCallbackUrl('/notifications-node/accounts/logout', this.config.privateRouterUrl),
@@ -182,7 +135,7 @@ export class LifecycleWorkerService implements OnApplicationBootstrap, BeforeApp
       const errorMessage = error instanceof Error ? error.message : String(error);
       const logContext = {
         actionId: action.actionId,
-        ...(action.type === 'TERMINATION' ? { chatUuid: action.scope.uuid } : { userUuid: action.scope.uuid }),
+        userUuid: action.scope.uuid,
         actionType: action.type,
         attempt: result.attempt ?? attempt,
         maxAttempts: this.config.maxAttempts,
@@ -233,7 +186,7 @@ export class LifecycleWorkerService implements OnApplicationBootstrap, BeforeApp
   }
 
   private isSupportedScopeType(scopeType: string): scopeType is LifecycleActionScope['type'] {
-    return scopeType === LIFECYCLE_SCOPE_TYPE.ChatEndUser || scopeType === LIFECYCLE_SCOPE_TYPE.Backoffice;
+    return scopeType === LIFECYCLE_SCOPE_TYPE.Backoffice;
   }
 
   private isRetryableCallbackError(error: unknown): boolean {

@@ -1,5 +1,5 @@
 import type { LIFECYCLE_STATUS } from '../lifecycle.constants';
-import type { BackofficeLifecycleScope, ChatLifecycleScope } from './lifecycle-scope.type';
+import type { BackofficeLifecycleScope } from './lifecycle-scope.type';
 
 export type ClaimedActionBase = {
   readonly actionId: string;
@@ -11,15 +11,10 @@ export type ClaimedActionBase = {
   readonly jti: string;
 };
 
-export type ClaimedTerminationAction = ClaimedActionBase & {
-  readonly scope: ChatLifecycleScope;
-  readonly type: 'TERMINATION';
-};
-
 export type ClaimedLogoutAction = ClaimedActionBase & {
   readonly scope: BackofficeLifecycleScope;
   readonly type: 'LOGOUT';
   readonly userIdCode: string;
 };
 
-export type ClaimedLifecycleAction = ClaimedTerminationAction | ClaimedLogoutAction;
+export type ClaimedLifecycleAction = ClaimedLogoutAction;

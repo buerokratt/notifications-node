@@ -1,12 +1,14 @@
 import { Type } from 'class-transformer';
 import { IsInt, IsUrl, Max, Min } from 'class-validator';
 
+import { SSE_HEARTBEAT_INTERVAL_MS } from '../notification/notification.constants';
+
 export class LifecycleConfigSchema {
   @IsUrl({ require_tld: false })
   readonly privateRouterUrl!: string;
 
   @IsInt()
-  @Min(31)
+  @Min(Math.floor(SSE_HEARTBEAT_INTERVAL_MS / 1000) + 1)
   @Type(() => Number)
   readonly presenceLeaseSeconds!: number;
 
