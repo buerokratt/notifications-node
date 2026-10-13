@@ -1,20 +1,37 @@
 import { createParser, type EventSourceMessage } from 'eventsource-parser';
 
 import {
+  DEFAULT_RECONNECT_DELAY_MS,
+  HEARTBEAT_TIMEOUT_MULTIPLIER,
   NOTIFICATIONS_ENDPOINT_PATH,
   NOTIFICATIONS_HEARTBEAT_EVENT_TYPE,
-  NOTIFICATIONS_HEARTBEAT_TIMEOUT_MS,
   NOTIFICATIONS_SESSION_EXPIRED_EVENT_TYPE,
+  WEB_PUSH_SUBSCRIPTION_HEADER,
 } from './core.constants.js';
+import {
+  NotificationConnectionHttpError,
+  NotificationConnectionLostError,
+  NotificationEventParseError,
+  NotificationHeartbeatTimeoutError,
+  NotificationResponseStreamError,
+  type NotificationClientError,
+} from './errors/index.js';
 import type {
   NotificationEvent,
   NotificationsClient,
   NotificationsClientConfig,
   NotificationsConnectionState,
 } from './interfaces/index.js';
-import type { NotificationsConnectionStateListener } from './types/index.js';
-
-const DEFAULT_RECONNECT_DELAY_MS = 3_000;
+import type {
+  NotificationHeartbeatData,
+  NotificationsConnectionStateListener,
+  WebPushEnableResult,
+} from './types/index.js';
+import {
+  decodeVapidPublicKey,
+  enableWebPush as enableBrowserWebPush,
+  encodeWebPushSubscriptionHeader,
+} from './web-push/index.js';
 
 const assertNonEmptyString = (value: string, name: keyof NotificationsClientConfig): void => {
   if (typeof value !== 'string' || value.trim().length === 0) {
@@ -30,11 +47,15 @@ const assertApiBaseUrl = (apiBaseUrl: string): void => {
   }
 };
 
-const getChatUuids = (chatUuids: string | string[]): readonly string[] =>
-  [...new Set(Array.isArray(chatUuids) ? chatUuids : [chatUuids])].sort();
+const getChatUuids = (chatUuids: string | readonly string[] | undefined): readonly string[] => {
+  if (!chatUuids) return [];
+  if (typeof chatUuids === 'string') return [chatUuids];
 
-const getError = (error: unknown, fallbackMessage: string): Error =>
-  error instanceof Error ? error : new Error(fallbackMessage);
+  return [...new Set(chatUuids)].sort();
+};
+
+const getHeartbeatTimeoutMs = (data: unknown): number =>
+  (data as NotificationHeartbeatData).heartbeatIntervalMs * HEARTBEAT_TIMEOUT_MULTIPLIER;
 
 const wait = (delayMs: number, signal: AbortSignal): Promise<void> =>
   new Promise((resolve) => {
@@ -57,14 +78,22 @@ const wait = (delayMs: number, signal: AbortSignal): Promise<void> =>
 /**
  * Creates a fetch-based notifications client without opening a connection.
  */
-export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientConfig): NotificationsClient => {
+export const createNotificationsClient = ({
+  apiBaseUrl,
+  vapidPublicKey,
+}: NotificationsClientConfig): NotificationsClient => {
   assertApiBaseUrl(apiBaseUrl);
+  assertNonEmptyString(vapidPublicKey, 'vapidPublicKey');
+
+  const applicationServerKey = decodeVapidPublicKey(vapidPublicKey);
 
   let connectionAbortController: AbortController | undefined;
   let activeChatUuidsKey: string | undefined;
   let desiredChatUuids: readonly string[] | undefined;
   let desiredChatUuidsKey: string | undefined;
+  let enableWebPushPromise: Promise<WebPushEnableResult> | undefined;
   let state: NotificationsConnectionState = Object.freeze({ status: 'disconnected' });
+  let webPushSubscription: PushSubscription | undefined;
 
   const stateListeners = new Set<NotificationsConnectionStateListener>();
   const allEventListeners = new Set<(event: NotificationEvent<unknown>) => void>();
@@ -122,14 +151,14 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
     };
   };
 
-  const dispatchEvent = (event: EventSourceMessage): void => {
+  const dispatchEvent = (event: EventSourceMessage): NotificationEvent<unknown> | undefined => {
     const eventType = event.event || 'message';
     let data: unknown;
 
     try {
       data = JSON.parse(event.data);
     } catch (error) {
-      const parsingError = getError(error, 'Failed to parse notification event data');
+      const parsingError = new NotificationEventParseError(error);
 
       setState({ error: parsingError, status: state.status });
       queueMicrotask(() => {
@@ -150,9 +179,15 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
         });
       }
     });
+
+    return notificationEvent;
   };
 
-  const runConnection = async (url: URL, abortController: AbortController): Promise<void> => {
+  const runConnection = async (
+    url: URL,
+    abortController: AbortController,
+    webPushSubscriptionHeader?: string,
+  ): Promise<void> => {
     const { signal } = abortController;
     let reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS;
 
@@ -160,7 +195,7 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
       const requestAbortController = new AbortController();
       let heartbeatTimeoutId: ReturnType<typeof setTimeout> | undefined;
       let heartbeatTimedOut = false;
-      let connectionError: Error | undefined;
+      let connectionError: NotificationClientError | undefined;
 
       const clearHeartbeatTimeout = (): void => {
         if (heartbeatTimeoutId === undefined) return;
@@ -169,12 +204,12 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
         heartbeatTimeoutId = undefined;
       };
 
-      const resetHeartbeatTimeout = (): void => {
+      const resetHeartbeatTimeout = (timeoutMs: number): void => {
         clearHeartbeatTimeout();
         heartbeatTimeoutId = setTimeout(() => {
           heartbeatTimedOut = true;
           requestAbortController.abort();
-        }, NOTIFICATIONS_HEARTBEAT_TIMEOUT_MS);
+        }, timeoutMs);
       };
 
       const abortRequest = (): void => requestAbortController.abort();
@@ -184,7 +219,10 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
       try {
         const response = await fetch(url, {
           credentials: 'include',
-          headers: { Accept: 'text/event-stream' },
+          headers: {
+            Accept: 'text/event-stream',
+            ...(webPushSubscriptionHeader ? { [WEB_PUSH_SUBSCRIPTION_HEADER]: webPushSubscriptionHeader } : {}),
+          },
           signal: requestAbortController.signal,
         });
 
@@ -199,22 +237,24 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
         }
 
         if (!response.ok) {
-          throw new Error(`Notification connection failed with status ${response.status}`);
+          throw new NotificationConnectionHttpError(response.status);
         }
 
         if (!response.body) {
-          throw new Error('Notification response does not contain a readable stream');
+          throw new NotificationResponseStreamError();
         }
 
         if (connectionAbortController !== abortController) return;
 
         setState({ status: 'connected' });
-        resetHeartbeatTimeout();
 
         const parser = createParser({
           onEvent: (event) => {
-            if (event.event === NOTIFICATIONS_HEARTBEAT_EVENT_TYPE) resetHeartbeatTimeout();
-            dispatchEvent(event);
+            const notificationEvent = dispatchEvent(event);
+
+            if (event.event === NOTIFICATIONS_HEARTBEAT_EVENT_TYPE) {
+              resetHeartbeatTimeout(getHeartbeatTimeoutMs(notificationEvent?.data));
+            }
 
             if (event.event !== NOTIFICATIONS_SESSION_EXPIRED_EVENT_TYPE) return;
 
@@ -239,17 +279,27 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
         if (signal.aborted || connectionAbortController !== abortController) return;
 
         if (heartbeatTimedOut) {
-          throw new Error('Notification heartbeat timed out');
+          throw new NotificationHeartbeatTimeoutError();
         }
 
         parser.reset({ consume: true });
-        throw new Error('Notification connection lost');
+        throw new NotificationConnectionLostError();
       } catch (error) {
         if (signal.aborted || connectionAbortController !== abortController) return;
 
-        connectionError = heartbeatTimedOut
-          ? new Error('Notification heartbeat timed out')
-          : getError(error, 'Notification connection lost');
+        const isKnownConnectionError =
+          error instanceof NotificationConnectionHttpError ||
+          error instanceof NotificationConnectionLostError ||
+          error instanceof NotificationHeartbeatTimeoutError ||
+          error instanceof NotificationResponseStreamError;
+
+        if (heartbeatTimedOut) {
+          connectionError = new NotificationHeartbeatTimeoutError();
+        } else if (isKnownConnectionError) {
+          connectionError = error;
+        } else {
+          connectionError = new NotificationConnectionLostError(error);
+        }
       } finally {
         clearHeartbeatTimeout();
         signal.removeEventListener('abort', abortRequest);
@@ -269,6 +319,9 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
 
   const openConnection = (chatUuids: readonly string[], chatUuidsKey: string): void => {
     const url = new URL(NOTIFICATIONS_ENDPOINT_PATH, apiBaseUrl);
+    const webPushSubscriptionHeader = webPushSubscription
+      ? encodeWebPushSubscriptionHeader(webPushSubscription)
+      : undefined;
 
     url.searchParams.delete('chatUuid');
     chatUuids.forEach((chatUuid) => url.searchParams.append('chatUuid', chatUuid));
@@ -280,7 +333,7 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
 
     connectionAbortController = abortController;
     activeChatUuidsKey = chatUuidsKey;
-    void runConnection(url, abortController).finally(() => {
+    void runConnection(url, abortController, webPushSubscriptionHeader).finally(() => {
       if (connectionAbortController !== abortController) return;
 
       connectionAbortController = undefined;
@@ -295,7 +348,7 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
     setState({ status: 'disconnected' });
   };
 
-  const connect = ({ chatUuids }: { readonly chatUuids: string | string[] }): void => {
+  const connect = ({ chatUuids }: { readonly chatUuids?: string | readonly string[] } = {}): void => {
     const normalizedChatUuids = getChatUuids(chatUuids);
     const chatUuidsKey = JSON.stringify(normalizedChatUuids);
 
@@ -313,9 +366,31 @@ export const createNotificationsClient = ({ apiBaseUrl }: NotificationsClientCon
     openConnection(desiredChatUuids, desiredChatUuidsKey);
   };
 
+  const enableWebPush = (): Promise<WebPushEnableResult> => {
+    if (webPushSubscription) {
+      return Promise.resolve({ status: 'enabled', subscription: webPushSubscription });
+    }
+
+    if (enableWebPushPromise) return enableWebPushPromise;
+
+    enableWebPushPromise = enableBrowserWebPush({
+      applicationServerKey,
+    })
+      .then((result) => {
+        if (result.status === 'enabled') webPushSubscription = result.subscription;
+        return result;
+      })
+      .finally(() => {
+        enableWebPushPromise = undefined;
+      });
+
+    return enableWebPushPromise;
+  };
+
   return Object.freeze({
     connect,
     disconnect,
+    enableWebPush,
     getState,
     reconnect,
     subscribeToEvent,

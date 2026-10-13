@@ -5,7 +5,7 @@
 The repository includes a React-first notifications SDK. See the [SDK README](sdk/README.md) for
 TypeScript examples, connection lifecycle, API reference, and maintainer guidance.
 
-> **TODO:** The SDK package is not published yet. Document the publishing process before releasing it.
+---
 
 # /api
 
@@ -376,15 +376,18 @@ POST /private/v1/notifications/events
 Internal publishers post notification envelopes to this endpoint. The private
 app validates the body and publishes accepted events to RabbitMQ.
 
-| Recipient | `recipientUuid` | Routing key |
+| Recipient | `recipientUuid` | Routing key(s) |
 | --- | --- | --- |
 | `GLOBAL` | Must be omitted | `global` |
-| `CHAT` | UUID v4 | `channel.chat.<recipientUuid>` |
-| `USER` | UUID or an Estonian identifier matching `^EE\d{11}$` | `channel.user.<normalizedUserUuid>` |
+| `CHAT` | Non-empty array of UUID v4 values | `channel.chat.<recipientUuid>` for each unique value |
+| `USER` | Non-empty array of UUIDs or Estonian identifiers matching `^EE\d{11}$` | `channel.user.<normalizedUserUuid>` for each unique value |
 
-For `USER`, an Estonian identifier is normalized to the same deterministic UUID
-v5 format used for authenticated USER subscriptions before the event is
-published.
+For `CHAT` and `USER`, one accepted HTTP request publishes one RabbitMQ message
+per unique recipient. For `USER`, every Estonian identifier is normalized to the
+same deterministic UUID v5 format used for authenticated USER subscriptions,
+then the normalized recipient array is deduplicated before publishing. Each
+RabbitMQ message and downstream SSE or Web Push event still contains one scalar
+`recipientUuid`.
 
 The private endpoint is also protected by TIM JWT authentication.
 
@@ -410,7 +413,7 @@ the private event body:
 {
   "eventUuid": "b0e97ac6-47ef-4bbf-83a6-cf01ebae5f3d",
   "recipient": "USER",
-  "recipientUuid": "EE30303039914",
+  "recipientUuid": ["EE30303039914", "39a67df5-61d2-4b70-8c82-3a4fda012475"],
   "type": "new_notification",
   "payload": {},
   "webPush": {
@@ -459,8 +462,15 @@ values. `NODE_ENV` defaults to `development` when it is not set.
 | `API_PORT_PUBLIC` | Optional | `3000` | Public API and SSE port; defaults to `3000`. |
 | `API_PORT_PRIVATE` | Optional | `3001` | Private API port; defaults to `3001`. |
 | `TIM_URL` | Required | `http://tim:8085` | Base URL of the TIM service, resolvable and reachable from the API container; must use `http` or `https`. |
+| `PRIVATE_RUUTER_URL` | Required for lifecycle callbacks | `http://ruuter-private:8088` | Base URL of the private Ruuter API, used for chat termination and account logout callbacks; must use `http` or `https`. |
 | `TIM_JWT_COOKIE_NAMES` | Required | `chatJwt,customJwtCookie,customSmaxJwtCookie,userJwt` | Comma-separated JWT cookie names used for TIM authentication; the first name is used in Swagger cookie auth. |
 | `TIM_TOKEN_REVALIDATION_INTERVAL_MS` | Required | `5000` | Interval, in milliseconds, for revalidating TIM tokens. |
+| `PRESENCE_LEASE_SECONDS` | Required | `45` | Server-side end-user SSE presence lease; it must exceed the heartbeat interval. |
+| `TERMINATION_GRACE_SECONDS` | Required | `10` | Time, in seconds, to wait after the last end-user presence lease expires before the final lifecycle presence check. |
+| `LIFECYCLE_POLL_INTERVAL_MS` | Required | `500` | Interval, in milliseconds, at which the Public API worker claims due lifecycle actions; allowed range is 500–1000. |
+| `LIFECYCLE_BATCH_SIZE` | Required | `20` | Maximum lifecycle actions actually claimed per worker poll; allowed range is 1–100. The candidate scan checks up to three times this number. |
+| `LIFECYCLE_ACTION_LEASE_SECONDS` | Required | `30` | Shared claim and callback-processing lease; must exceed callback timeout plus a safety margin. |
+| `LIFECYCLE_MAX_ATTEMPTS` | Required | `5` | Maximum callback attempts before a lifecycle action is marked failed. |
 | `RABBITMQ_URL` | Required | `amqps://user:password@rabbitmq.example:5671/vhost?heartbeat=30` | AMQP/AMQPS connection URL. Production Docker Compose uses its included RabbitMQ service by default; change the URL when using an external or managed instance. |
 | `RABBITMQ_PREFIX` | Optional | `production` | Use `production` to isolate production RabbitMQ resources, or leave it empty when no prefix is needed. |
 | `VALKEY_HOST` | Required | `valkey` | Valkey hostname used by the standalone GLIDE client; must be a non-empty string. |
@@ -533,6 +543,23 @@ dependency's service or DNS name.
 
 Store RabbitMQ credentials in the deployment platform's secret manager. Do not
 commit them to the repository.
+
+### Web Push VAPID keys
+
+Generate a VAPID key pair from the repository root with:
+
+```sh
+./scripts/generate-vapid-keys.sh
+```
+
+The script requires Node.js and does not require `pnpm install`. It prints
+`WEB_PUSH_VAPID_PUBLIC_KEY` and `WEB_PUSH_VAPID_PRIVATE_KEY` assignments. Add
+both values to the API deployment environment, and keep the private key in the
+deployment platform's secret manager. Do not commit or share the private key.
+
+Set `WEB_PUSH_VAPID_SUBJECT` to a monitored `mailto:` address or an `https:`
+URL. Configure the SDK with the matching public key using its `vapidPublicKey`
+option.
 
 ### Production Docker Compose
 
