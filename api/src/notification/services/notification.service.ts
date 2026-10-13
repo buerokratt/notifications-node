@@ -28,7 +28,7 @@ import {
 import type { PushSubscription } from 'web-push';
 
 import { LifecycleService } from '../../lifecycle/services';
-import type { LifecycleConnection, LifecycleConnectionScope } from '../../lifecycle/types';
+import type { LifecycleConnection } from '../../lifecycle/types';
 import { NotificationRecipient } from '../../rabbitmq/enums';
 import { RabbitmqService } from '../../rabbitmq/services';
 import type { RabbitmqNotificationEvent } from '../../rabbitmq/types';
@@ -92,10 +92,11 @@ export class NotificationService {
     webPushSubscription?: PushSubscription,
   ): Promise<Observable<MessageEvent>> {
     const chatUuids = [...new Set(query.chatUuid ?? [])];
+    this.validateChatSubscription(request, chatUuids);
     const userIdentity = this.getAuthenticatedUserIdentity(request);
     const userUuid = userIdentity?.uuid;
     const { decodedToken } = request.timTokenVerificationContext;
-    const lifecycleConnections = this.getLifecycleConnections(request, chatUuids, decodedToken.jti, userIdentity);
+    const lifecycleConnections = this.getLifecycleConnections(decodedToken.jti, userIdentity);
     const channelTargets: ChannelTarget[] = [
       ...chatUuids.map((recipientUuid) => ({
         recipient: NotificationRecipient.Chat as const,
@@ -174,28 +175,17 @@ export class NotificationService {
     });
   }
 
-  private getLifecycleConnections(
-    request: TimAuthenticatedRequest,
-    chatUuids: readonly string[],
-    jti: string,
-    userIdentity?: AuthenticatedUserIdentity,
-  ): LifecycleConnection[] {
-    const chatLifecycleScope = this.getEndUserLifecycleScope(request, chatUuids);
-    const lifecycleConnections: LifecycleConnection[] = [];
+  private getLifecycleConnections(jti: string, userIdentity?: AuthenticatedUserIdentity): LifecycleConnection[] {
+    if (!userIdentity) return [];
 
-    if (chatLifecycleScope) {
-      lifecycleConnections.push({ scope: chatLifecycleScope, connectionId: randomUUID(), jti });
-    }
-    if (userIdentity) {
-      lifecycleConnections.push({
+    return [
+      {
         scope: { uuid: userIdentity.uuid, type: 'user' },
         connectionId: randomUUID(),
         jti,
         userIdCode: userIdentity.idCode,
-      });
-    }
-
-    return lifecycleConnections;
+      },
+    ];
   }
 
   @OnEvent(NOTIFICATION_RECEIVED_EVENT)
@@ -271,32 +261,13 @@ export class NotificationService {
     );
   }
 
-  private getEndUserLifecycleScope(
-    request: TimAuthenticatedRequest,
-    chatUuids: readonly string[],
-  ): Extract<LifecycleConnectionScope, { readonly type: 'chat' }> | undefined {
-    const { cookieName, decodedToken } = request.timTokenVerificationContext;
-    if (cookieName !== 'chatJwt') return;
-
-    const chatUuid = decodedToken['chatId'];
-    if (typeof chatUuid !== 'string' || chatUuids.length !== 1 || chatUuids[0] !== chatUuid) {
-      throw new UnauthorizedException();
-    }
-
-    return { uuid: chatUuid, type: 'chat' };
-  }
-
   private registerLifecycleConnection(connection: LifecycleConnection): Promise<void> {
-    if ('userIdCode' in connection) {
-      return this.lifecycleService.registerConnection(
-        connection.scope,
-        connection.connectionId,
-        connection.jti,
-        connection.userIdCode,
-      );
-    }
-
-    return this.lifecycleService.registerConnection(connection.scope, connection.connectionId, connection.jti);
+    return this.lifecycleService.registerConnection(
+      connection.scope,
+      connection.connectionId,
+      connection.jti,
+      connection.userIdCode,
+    );
   }
 
   private async registerWebPushSubscription(
@@ -311,6 +282,16 @@ export class NotificationService {
       subscription: webPushSubscription,
       expirationTimeSeconds: this.getTokenExpirationTimeSeconds(expirationTimeSeconds),
     });
+  }
+
+  private validateChatSubscription(request: TimAuthenticatedRequest, chatUuids: readonly string[]): void {
+    const { cookieName, decodedToken } = request.timTokenVerificationContext;
+    if (cookieName !== 'chatJwt') return;
+
+    const chatUuid = decodedToken['chatId'];
+    if (typeof chatUuid !== 'string' || chatUuids.length !== 1 || chatUuids[0] !== chatUuid) {
+      throw new UnauthorizedException();
+    }
   }
 
   private createTokenRevalidationStream(

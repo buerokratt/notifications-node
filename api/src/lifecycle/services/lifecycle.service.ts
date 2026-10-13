@@ -18,7 +18,6 @@ import {
   RECORD_ACTION_FAILURE_SCRIPT,
   REGISTER_CONNECTION_SCRIPT,
   REMOVE_CONNECTION_SCRIPT,
-  TERMINATION_ACTION_TYPE,
 } from '../lifecycle.constants';
 import type {
   ClaimedLifecycleAction,
@@ -41,27 +40,12 @@ export class LifecycleService {
   ) {}
 
   public async registerConnection(
-    ...args:
-      | [scope: Extract<LifecycleConnectionScope, { readonly type: 'chat' }>, connectionId: string, jti: string]
-      | [
-          scope: Extract<LifecycleConnectionScope, { readonly type: 'user' }>,
-          connectionId: string,
-          jti: string,
-          userIdCode: string,
-        ]
+    scope: LifecycleConnectionScope,
+    connectionId: string,
+    jti: string,
+    userIdCode: string,
   ): Promise<void> {
-    const [scope, connectionId, jti] = args;
-    let actionUserIdCode = '';
-    if (scope.type === 'user') {
-      if (args.length !== 4 || !args[3]) throw new Error('Backoffice lifecycle connection requires user ID code');
-      actionUserIdCode = args[3];
-    }
-
-    const actionScope =
-      scope.type === 'user'
-        ? { uuid: scope.uuid, type: LIFECYCLE_SCOPE_TYPE.Backoffice }
-        : { uuid: scope.uuid, type: LIFECYCLE_SCOPE_TYPE.ChatEndUser };
-    const actionType = scope.type === 'user' ? LOGOUT_ACTION_TYPE : TERMINATION_ACTION_TYPE;
+    const actionScope = { uuid: scope.uuid, type: LIFECYCLE_SCOPE_TYPE.Backoffice };
 
     await this.valkeyService.executeScript(
       REGISTER_CONNECTION_SCRIPT,
@@ -69,14 +53,14 @@ export class LifecycleService {
       [
         connectionId,
         this.config.presenceLeaseSeconds.toString(),
-        actionType,
+        LOGOUT_ACTION_TYPE,
         actionScope.type,
         actionScope.uuid,
         randomUUID(),
         this.config.terminationGraceSeconds.toString(),
         buildLifecycleScheduleMember(actionScope),
         jti,
-        actionUserIdCode,
+        userIdCode,
       ],
     );
   }
@@ -84,11 +68,7 @@ export class LifecycleService {
   public async removeConnection(scope: LifecycleConnectionScope, connectionId: string): Promise<void> {
     if (!this.valkeyService.isInitialized) return;
 
-    const actionScope =
-      scope.type === 'user'
-        ? { uuid: scope.uuid, type: LIFECYCLE_SCOPE_TYPE.Backoffice }
-        : { uuid: scope.uuid, type: LIFECYCLE_SCOPE_TYPE.ChatEndUser };
-    const actionType = scope.type === 'user' ? LOGOUT_ACTION_TYPE : TERMINATION_ACTION_TYPE;
+    const actionScope = { uuid: scope.uuid, type: LIFECYCLE_SCOPE_TYPE.Backoffice };
 
     await this.valkeyService.executeScript(
       REMOVE_CONNECTION_SCRIPT,
@@ -96,7 +76,7 @@ export class LifecycleService {
       [
         connectionId,
         this.config.terminationGraceSeconds.toString(),
-        actionType,
+        LOGOUT_ACTION_TYPE,
         actionScope.type,
         actionScope.uuid,
         randomUUID(),
@@ -122,7 +102,7 @@ export class LifecycleService {
         this.config.actionLeaseSeconds.toString(),
         randomUUID(),
         this.replicaId,
-        scope.type === LIFECYCLE_SCOPE_TYPE.Backoffice ? LOGOUT_ACTION_TYPE : TERMINATION_ACTION_TYPE,
+        LOGOUT_ACTION_TYPE,
       ],
     );
     const action = this.parseClaimedActionResult(result);
@@ -148,14 +128,6 @@ export class LifecycleService {
       dueAt: action.dueAt,
       jti: action.jti,
     };
-    if (action.type === TERMINATION_ACTION_TYPE && scope.type === LIFECYCLE_SCOPE_TYPE.ChatEndUser) {
-      return {
-        ...resultBase,
-        scope: { uuid: scope.uuid, type: LIFECYCLE_SCOPE_TYPE.ChatEndUser },
-        type: 'TERMINATION',
-      };
-    }
-
     if (action.type === LOGOUT_ACTION_TYPE && scope.type === LIFECYCLE_SCOPE_TYPE.Backoffice) {
       return {
         ...resultBase,
@@ -272,8 +244,7 @@ export class LifecycleService {
       return false;
     }
 
-    if (type === LOGOUT_ACTION_TYPE) return typeof userIdCode === 'string' && !!userIdCode.trim();
-    return type === TERMINATION_ACTION_TYPE && userIdCode === undefined;
+    return type === LOGOUT_ACTION_TYPE && typeof userIdCode === 'string' && !!userIdCode.trim();
   }
 
   private isRecord(value: unknown): value is Record<string, unknown> {

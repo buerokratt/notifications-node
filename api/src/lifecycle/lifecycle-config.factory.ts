@@ -11,7 +11,7 @@ export const lifecycleConfigFactory = registerAs('lifecycle', (): LifecycleConfi
     actionLeaseSeconds: <string>env['LIFECYCLE_ACTION_LEASE_SECONDS'],
     maxAttempts: <string>env['LIFECYCLE_MAX_ATTEMPTS'],
     pollIntervalMs: <string>env['LIFECYCLE_POLL_INTERVAL_MS'],
-    privateRouterUrl: env['PRIVATE_RUUTER_URL'],
+    privateRouterUrl: <string>env['PRIVATE_RUUTER_URL'],
     presenceLeaseSeconds: <string>env['PRESENCE_LEASE_SECONDS'],
     terminationGraceSeconds: <string>env['TERMINATION_GRACE_SECONDS'],
   });

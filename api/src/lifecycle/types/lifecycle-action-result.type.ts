@@ -1,4 +1,4 @@
-import { type LIFECYCLE_STATUS, LOGOUT_ACTION_TYPE, TERMINATION_ACTION_TYPE } from '../lifecycle.constants';
+import { type LIFECYCLE_STATUS, LOGOUT_ACTION_TYPE } from '../lifecycle.constants';
 
 export type LifecycleActionResultStatus = (typeof LIFECYCLE_STATUS.result)[keyof typeof LIFECYCLE_STATUS.result];
 
@@ -23,5 +23,4 @@ export type ClaimedLifecycleActionResult =
       readonly jti: string;
       readonly userIdCode: string;
     })
-  | (ClaimedLifecycleActionResultBase & { readonly type: typeof TERMINATION_ACTION_TYPE; readonly jti: string })
   | { readonly status: typeof LIFECYCLE_STATUS.result.failed; readonly actionType: string };
