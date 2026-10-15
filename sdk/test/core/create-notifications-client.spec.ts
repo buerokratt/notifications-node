@@ -1,26 +1,43 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  NOTIFICATIONS_HEARTBEAT_TIMEOUT_MS,
   NOTIFICATIONS_SESSION_EXPIRED_EVENT_TYPE,
+  WEB_PUSH_SUBSCRIPTION_HEADER,
 } from '../../src/core/core.constants.js';
 import { createNotificationsClient } from '../../src/core/create-notification-client.js';
-import type { NotificationEvent, NotificationsClient, NotificationsConnectionStatus } from '../../src/core/index.js';
+import {
+  NotificationConnectionHttpError,
+  NotificationConnectionLostError,
+  NotificationEventParseError,
+  NotificationResponseStreamError,
+  type NotificationEvent,
+  type NotificationsClient,
+  type NotificationsConnectionStatus,
+} from '../../src/core/index.js';
 import { advanceTimers, flushMicrotasks, waitForCondition } from '../helpers/async.helper.js';
 import { ControlledFetchHarness } from '../helpers/fetch-sse.helper.js';
+import {
+  decodeBase64UrlJson,
+  installWebPushBrowser,
+  SUBSCRIPTION_JSON,
+  type WebPushBrowserHarness,
+} from '../helpers/web-push.helper.js';
 
 const API_BASE_URL = 'https://notifications.example.test';
 const CHAT_A = '89b39d46-bf9a-4f07-a18a-5f574c2aa738';
 const CHAT_B = 'c9772e61-f4e8-4f96-9a6a-dc247f497869';
+const OFFLINE_ERROR = new Error('offline');
+const VAPID_PUBLIC_KEY = 'BGtr18_RnioZdJqSdhw3tHEKwklwzm-er3gnHWYolmx0GW-WhAhT-xu46acxbhRZN3_JTyqkFJPI8kFLkyONsGs';
 
 const sseEvent = (type: string, data: unknown): string => `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
 
 describe('createNotificationsClient', () => {
   let fetchHarness: ControlledFetchHarness;
+  let webPushHarness: WebPushBrowserHarness;
   const clients: NotificationsClient[] = [];
 
   const createClient = (): NotificationsClient => {
-    const client = createNotificationsClient({ apiBaseUrl: API_BASE_URL });
+    const client = createNotificationsClient({ apiBaseUrl: API_BASE_URL, vapidPublicKey: VAPID_PUBLIC_KEY });
     clients.push(client);
     return client;
   };
@@ -36,10 +53,12 @@ describe('createNotificationsClient', () => {
   beforeEach(() => {
     fetchHarness = new ControlledFetchHarness();
     fetchHarness.install();
+    webPushHarness = installWebPushBrowser();
   });
 
   afterEach(() => {
     clients.forEach((client) => client.disconnect());
+    webPushHarness.restore();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -54,10 +73,102 @@ describe('createNotificationsClient', () => {
     expect(Object.isFrozen(client)).toBe(true);
   });
 
+  it('connects without enabling Web Push and omits the subscription header', async () => {
+    fetchHarness.queueSse();
+    const client = createClient();
+
+    client.connect({ chatUuids: CHAT_A });
+    const request = await fetchHarness.request(0);
+    await waitForStatus(client, 'connected');
+
+    expect(new Headers(request.init?.headers).has(WEB_PUSH_SUBSCRIPTION_HEADER)).toBe(false);
+    expect(client.getState().status).toBe('connected');
+  });
+
+  it('connects after Web Push permission is denied and omits the subscription header', async () => {
+    webPushHarness.setPermission('default');
+    webPushHarness.setRequestPermissionResult('denied');
+    fetchHarness.queueSse();
+    const client = createClient();
+
+    await expect(client.enableWebPush()).resolves.toEqual({ status: 'denied' });
+    client.connect({ chatUuids: CHAT_A });
+    const request = await fetchHarness.request(0);
+    await waitForStatus(client, 'connected');
+
+    expect(new Headers(request.init?.headers).has(WEB_PUSH_SUBSCRIPTION_HEADER)).toBe(false);
+    expect(client.getState().status).toBe('connected');
+  });
+
+  it('deduplicates concurrent Web Push enablement', async () => {
+    let resolveReady!: (registration: ServiceWorkerRegistration) => void;
+    const ready = new Promise<ServiceWorkerRegistration>((resolve) => {
+      resolveReady = resolve;
+    });
+    webPushHarness.restore();
+    webPushHarness = installWebPushBrowser({ ready });
+    const client = createClient();
+
+    const first = client.enableWebPush();
+    const second = client.enableWebPush();
+
+    expect(second).toBe(first);
+    expect(webPushHarness.register).toHaveBeenCalledOnce();
+
+    resolveReady(webPushHarness.registration);
+    await expect(first).resolves.toEqual({ status: 'enabled', subscription: webPushHarness.subscription });
+  });
+
+  it('caches a successful Web Push subscription', async () => {
+    const client = createClient();
+
+    await expect(client.enableWebPush()).resolves.toEqual({
+      status: 'enabled',
+      subscription: webPushHarness.subscription,
+    });
+    await expect(client.enableWebPush()).resolves.toEqual({
+      status: 'enabled',
+      subscription: webPushHarness.subscription,
+    });
+
+    expect(webPushHarness.register).toHaveBeenCalledOnce();
+    expect(webPushHarness.getSubscription).toHaveBeenCalledOnce();
+    expect(webPushHarness.subscribe).toHaveBeenCalledOnce();
+  });
+
+  it('retries Web Push enablement after permission denial', async () => {
+    webPushHarness.restore();
+    webPushHarness = installWebPushBrowser({ permission: 'denied' });
+    const client = createClient();
+
+    await expect(client.enableWebPush()).resolves.toEqual({ status: 'denied' });
+    webPushHarness.setPermission('granted');
+    await expect(client.enableWebPush()).resolves.toEqual({
+      status: 'enabled',
+      subscription: webPushHarness.subscription,
+    });
+
+    expect(webPushHarness.register).toHaveBeenCalledOnce();
+  });
+
+  it('retries Web Push enablement after a platform failure', async () => {
+    const failure = new Error('registration failed');
+    webPushHarness.register.mockRejectedValueOnce(failure);
+    const client = createClient();
+
+    await expect(client.enableWebPush()).rejects.toBe(failure);
+    await expect(client.enableWebPush()).resolves.toEqual({
+      status: 'enabled',
+      subscription: webPushHarness.subscription,
+    });
+
+    expect(webPushHarness.register).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['', '   ', 'https://notifications.example.test/'])(
     'rejects invalid API base URL %j before creating a client',
     (apiBaseUrl) => {
-      expect(() => createNotificationsClient({ apiBaseUrl })).toThrow(TypeError);
+      expect(() => createNotificationsClient({ apiBaseUrl, vapidPublicKey: VAPID_PUBLIC_KEY })).toThrow(TypeError);
       expect(fetchHarness.fetch).not.toHaveBeenCalled();
     },
   );
@@ -65,16 +176,35 @@ describe('createNotificationsClient', () => {
   it('uses the fixed endpoint, sorted deduplicated query values, credentials, headers, and an abort signal', async () => {
     const client = createClient();
 
+    await client.enableWebPush();
     client.connect({ chatUuids: [CHAT_B, CHAT_A, CHAT_B] });
     const request = await fetchHarness.request(0);
 
     expect(request.url).toBe(`${API_BASE_URL}/public/v1/notifications/events?chatUuid=${CHAT_A}&chatUuid=${CHAT_B}`);
     expect(request.init).toMatchObject({
       credentials: 'include',
-      headers: { Accept: 'text/event-stream' },
     });
+    const headers = new Headers(request.init?.headers);
+    const encodedSubscription = headers.get(WEB_PUSH_SUBSCRIPTION_HEADER);
+
+    expect(headers.get('Accept')).toBe('text/event-stream');
+    expect(encodedSubscription).not.toBeNull();
+    expect(decodeBase64UrlJson(encodedSubscription!)).toEqual(SUBSCRIPTION_JSON);
     expect(request.signal).toBeInstanceOf(AbortSignal);
     expect(request.signal?.aborted).toBe(false);
+  });
+
+  it.each([
+    ['without arguments', (client: NotificationsClient) => client.connect()],
+    ['with empty arguments', (client: NotificationsClient) => client.connect({})],
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+  ])('connects %s and omits the chatUuid query parameter', async (_label, connectWithoutChats) => {
+    const client = createClient();
+
+    connectWithoutChats(client);
+    const request = await fetchHarness.request(0);
+
+    expect(request.url).toBe(`${API_BASE_URL}/public/v1/notifications/events`);
   });
 
   it('does not replace a request for an equivalent subscription', async () => {
@@ -209,8 +339,16 @@ describe('createNotificationsClient', () => {
     await waitForCondition(() => queuedErrors.length === 1, 'queued parser error');
 
     expect(client.getState().status).toBe('connected');
-    expect(client.getState().error).toBeInstanceOf(SyntaxError);
-    expect(queuedErrors[0]).toBe(client.getState().error);
+    const parsingError = client.getState().error;
+
+    expect(parsingError).toBeInstanceOf(NotificationEventParseError);
+    expect(queuedErrors[0]).toBe(parsingError);
+
+    if (!(parsingError instanceof NotificationEventParseError)) {
+      throw new TypeError('Expected a NotificationEventParseError');
+    }
+
+    expect(parsingError.cause).toBeInstanceOf(SyntaxError);
   });
 
   it('isolates listener failures so later listeners still receive the event', async () => {
@@ -241,10 +379,18 @@ describe('createNotificationsClient', () => {
   });
 
   it.each([
-    ['network failure', () => fetchHarness.queueFailure(new Error('offline')), 'offline'],
-    ['non-OK response', () => fetchHarness.queueResponse(new Response(null, { status: 503 })), 'status 503'],
-    ['missing body', () => fetchHarness.queueResponse(new Response(null, { status: 200 })), 'readable stream'],
-  ])('enters retry after %s', async (caseName, arrange, expectedMessage) => {
+    ['network failure', () => fetchHarness.queueFailure(OFFLINE_ERROR), NotificationConnectionLostError],
+    [
+      'non-OK response',
+      () => fetchHarness.queueResponse(new Response(null, { status: 503 })),
+      NotificationConnectionHttpError,
+    ],
+    [
+      'missing body',
+      () => fetchHarness.queueResponse(new Response(null, { status: 200 })),
+      NotificationResponseStreamError,
+    ],
+  ])('enters retry with a typed error after %s', async (caseName, arrange, expectedErrorClass) => {
     void caseName;
     vi.useFakeTimers();
     arrange();
@@ -253,7 +399,16 @@ describe('createNotificationsClient', () => {
 
     await waitForStatus(client, 'reconnecting');
 
-    expect(client.getState().error?.message).toContain(expectedMessage);
+    const connectionError = client.getState().error;
+
+    expect(connectionError).toBeInstanceOf(expectedErrorClass);
+
+    if (connectionError instanceof NotificationConnectionHttpError) {
+      expect(connectionError.status).toBe(503);
+    } else if (connectionError instanceof NotificationConnectionLostError) {
+      expect(connectionError.cause).toBe(OFFLINE_ERROR);
+    }
+
     expect(fetchHarness.requests).toHaveLength(1);
   });
 
@@ -261,17 +416,35 @@ describe('createNotificationsClient', () => {
     vi.useFakeTimers();
     const stream = fetchHarness.queueSse();
     const client = createClient();
+    await client.enableWebPush();
     client.connect({ chatUuids: CHAT_A });
+    const firstRequest = await fetchHarness.request(0);
     await waitForStatus(client, 'connected');
 
-    stream.fail(new Error('stream failed'));
+    const streamError = new Error('stream failed');
+    stream.fail(streamError);
     await waitForStatus(client, 'reconnecting');
     await advanceTimers(2_999);
     expect(fetchHarness.requests).toHaveLength(1);
 
     await advanceTimers(1);
-    await fetchHarness.request(1);
-    expect(client.getState().error?.message).toBe('stream failed');
+    const secondRequest = await fetchHarness.request(1);
+    const connectionError = client.getState().error;
+
+    expect(connectionError).toBeInstanceOf(NotificationConnectionLostError);
+
+    if (!(connectionError instanceof NotificationConnectionLostError)) {
+      throw new TypeError('Expected a NotificationConnectionLostError');
+    }
+
+    expect(connectionError.cause).toBe(streamError);
+    const firstSubscriptionHeader = new Headers(firstRequest.init?.headers).get(WEB_PUSH_SUBSCRIPTION_HEADER);
+    const secondSubscriptionHeader = new Headers(secondRequest.init?.headers).get(WEB_PUSH_SUBSCRIPTION_HEADER);
+
+    expect(firstSubscriptionHeader).not.toBeNull();
+    expect(secondSubscriptionHeader).not.toBeNull();
+    expect(decodeBase64UrlJson(secondSubscriptionHeader!)).toEqual(SUBSCRIPTION_JSON);
+    expect(secondSubscriptionHeader).toBe(firstSubscriptionHeader);
   });
 
   it('uses the latest SSE retry value after a stream closes', async () => {
@@ -291,22 +464,33 @@ describe('createNotificationsClient', () => {
     await fetchHarness.request(1);
   });
 
-  it('times out a stalled stream and heartbeats reset the deadline', async () => {
+  it('uses the heartbeat payload interval to reset the timeout deadline', async () => {
     vi.useFakeTimers();
     const stream = fetchHarness.queueSse();
     const client = createClient();
     client.connect({ chatUuids: CHAT_A });
     await waitForStatus(client, 'connected');
 
-    await advanceTimers(NOTIFICATIONS_HEARTBEAT_TIMEOUT_MS - 1_000);
-    stream.write(sseEvent('heartbeat', {}));
+    stream.write(sseEvent('heartbeat', { heartbeatIntervalMs: 10_000 }));
     await flushMicrotasks();
-    await advanceTimers(NOTIFICATIONS_HEARTBEAT_TIMEOUT_MS - 1_000);
+    await advanceTimers(19_999);
     expect(client.getState().status).toBe('connected');
 
-    await advanceTimers(1_000);
+    await advanceTimers(1);
     await waitForStatus(client, 'reconnecting');
     expect(client.getState().error?.message).toBe('Notification heartbeat timed out');
+  });
+
+  it('does not start the heartbeat timeout before the first heartbeat', async () => {
+    vi.useFakeTimers();
+    fetchHarness.queueSse();
+    const client = createClient();
+    client.connect();
+    await waitForStatus(client, 'connected');
+
+    await advanceTimers(120_000);
+
+    expect(client.getState().status).toBe('connected');
   });
 
   describe('explicit reconnect', () => {
@@ -317,17 +501,17 @@ describe('createNotificationsClient', () => {
       expect(client.getState().status).toBe('disconnected');
     });
 
-    it.each(['connecting', 'connected', 'stalled'] as const)(
+    it.each(['connecting', 'connected'] as const)(
       'immediately replaces the sole request while %s and preserves subscriptions',
       async (phase) => {
         const firstStream = phase === 'connecting' ? undefined : fetchHarness.queueSse();
         const client = createClient();
         const listener = vi.fn();
         client.subscribeToEvent('notice', listener);
+        await client.enableWebPush();
         client.connect({ chatUuids: [CHAT_B, CHAT_A] });
         const first = await fetchHarness.request(0);
         if (phase !== 'connecting') await waitForStatus(client, 'connected');
-        if (phase === 'stalled') await flushMicrotasks();
 
         let replacement;
         if (phase === 'connecting') {
@@ -345,6 +529,13 @@ describe('createNotificationsClient', () => {
         expect(first.signal?.aborted).toBe(true);
         expect(second.signal?.aborted).toBe(false);
         expect(second.url).toContain(`chatUuid=${CHAT_A}&chatUuid=${CHAT_B}`);
+        const firstSubscriptionHeader = new Headers(first.init?.headers).get(WEB_PUSH_SUBSCRIPTION_HEADER);
+        const secondSubscriptionHeader = new Headers(second.init?.headers).get(WEB_PUSH_SUBSCRIPTION_HEADER);
+
+        expect(firstSubscriptionHeader).not.toBeNull();
+        expect(secondSubscriptionHeader).not.toBeNull();
+        expect(decodeBase64UrlJson(secondSubscriptionHeader!)).toEqual(SUBSCRIPTION_JSON);
+        expect(secondSubscriptionHeader).toBe(firstSubscriptionHeader);
         expect(listener).toHaveBeenCalledWith({ data: { id: phase }, type: 'notice' });
         firstStream?.close();
       },
@@ -369,11 +560,13 @@ describe('createNotificationsClient', () => {
 
     it('clears the replaced request heartbeat and starts a fresh deadline', async () => {
       vi.useFakeTimers();
-      fetchHarness.queueSse();
+      const firstStream = fetchHarness.queueSse();
       const client = createClient();
       client.connect({ chatUuids: CHAT_A });
       await waitForStatus(client, 'connected');
-      await advanceTimers(NOTIFICATIONS_HEARTBEAT_TIMEOUT_MS - 1_000);
+      firstStream.write(sseEvent('heartbeat', { heartbeatIntervalMs: 10_000 }));
+      await flushMicrotasks();
+      await advanceTimers(19_000);
 
       fetchHarness.queueSse();
       client.reconnect();
