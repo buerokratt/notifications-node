@@ -1,5 +1,5 @@
 # Base image and shared runtime setup.
-FROM --platform=linux/amd64 node:24.16.0-alpine AS base
+FROM --platform=linux/amd64 node:24.22.1-alpine AS base
 RUN corepack enable pnpm
 RUN mkdir /api && chown node:node /api
 WORKDIR /api

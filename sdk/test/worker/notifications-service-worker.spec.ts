@@ -88,6 +88,26 @@ describe('notifications service worker', () => {
     expect(showNotification).not.toHaveBeenCalled();
   });
 
+  it('forwards an empty event name after trimming without rejecting the push', async () => {
+    const { completion } = dispatchPush(
+      pushData({
+        notification: {
+          body: 'Body',
+          event: { type: '   ', uuid: ' event-uuid ' },
+          title: 'Title',
+        },
+      }),
+    );
+
+    await completion;
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'WEB_PUSH',
+      event: { type: '', uuid: 'event-uuid' },
+    });
+    expect(showNotification).toHaveBeenCalledWith('Title', { body: 'Body' });
+  });
+
   it('ignores push data that cannot be decoded as JSON', async () => {
     const data = {
       json: () => {

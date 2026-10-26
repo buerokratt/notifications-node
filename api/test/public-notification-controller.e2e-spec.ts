@@ -71,7 +71,6 @@ describe('PublicNotificationsController (e2e)', () => {
     .digest('base64url');
   const WEB_PUSH_SUBSCRIPTION_IDS = [WEB_PUSH_SUBSCRIPTION_ID, SECOND_WEB_PUSH_SUBSCRIPTION_ID];
   const LIFECYCLE_TEST_SCOPES = [
-    { uuid: CHAT_UUID, type: LIFECYCLE_SCOPE_TYPE.ChatEndUser },
     {
       uuid: UserRecipientUuidUtil.normalizeIdCode(TIM_USER_TEST_ID_CODE),
       type: LIFECYCLE_SCOPE_TYPE.Backoffice,

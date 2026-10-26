@@ -1,4 +1,4 @@
-FROM --platform=linux/amd64 node:24.16.0-alpine
+FROM --platform=linux/amd64 node:24.22.1-alpine
 
 RUN corepack enable pnpm
 RUN mkdir /api && chown node:node /api

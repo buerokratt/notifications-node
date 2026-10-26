@@ -1,5 +1,5 @@
 import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
-import { ApiAcceptedResponse, ApiBadRequestResponse, ApiOperation, ApiUnauthorizedResponse } from '@nestjs/swagger';
+import { ApiAcceptedResponse, ApiBadRequestResponse, ApiOperation } from '@nestjs/swagger';
 
 import { CreateNotificationEventBodyDto } from '../../notification/dtos';
 import { NotificationService } from '../../notification/services';
@@ -16,9 +16,6 @@ export class PrivateNotificationsController {
   })
   @ApiBadRequestResponse({
     description: 'Invalid notification event envelope',
-  })
-  @ApiUnauthorizedResponse({
-    description: 'Missing, invalid, rejected, or unverifiable JWT',
   })
   public async publishNotificationEvent(@Body() body: CreateNotificationEventBodyDto): Promise<void> {
     await this.notificationService.publishNotificationEvent(body);
