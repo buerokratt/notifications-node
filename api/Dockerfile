@@ -1,5 +1,5 @@
 # Base image and shared runtime setup.
-FROM --platform=linux/amd64 node:24.16.0-alpine AS base
+FROM --platform=linux/amd64 dhi.io/node:24.22.1-alpine-dev AS base
 RUN corepack enable pnpm
 RUN mkdir /api && chown node:node /api
 WORKDIR /api
@@ -18,10 +18,11 @@ COPY src ./src
 RUN pnpm build
 
 # Assemble the production image.
-FROM base AS production
+FROM --platform=linux/amd64 dhi.io/node:24.22.1-alpine AS production
+WORKDIR /api
 ENV NODE_ENV=production
 COPY --from=dependencies /api/node_modules ./node_modules
 COPY --from=build /api/dist ./dist
 COPY package.json ./
 EXPOSE 3000 3001
-CMD ["pnpm", "run", "start:prod"]
+CMD ["node", "dist/src/main"]

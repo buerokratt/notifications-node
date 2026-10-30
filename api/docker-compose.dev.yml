@@ -13,6 +13,8 @@ services:
     environment:
       RABBITMQ_URL: amqp://rabbitmq:5672?heartbeat=30
       TIM_URL: http://tim:8085
+      VALKEY_HOST: valkey
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD must be set}
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -68,7 +70,9 @@ services:
 
   valkey:
     image: 'valkey/valkey:8-alpine'
-    command: ['valkey-server', '--appendonly', 'yes']
+    command: ['valkey-server', '--appendonly', 'yes', '--requirepass', '${VALKEY_PASSWORD:?VALKEY_PASSWORD must be set}']
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD must be set}
     ports:
       - 6379:6379
     networks:
@@ -76,7 +80,7 @@ services:
     volumes:
       - valkey-data:/data
     healthcheck:
-      test: ['CMD', 'valkey-cli', 'ping']
+      test: ['CMD-SHELL', 'valkey-cli --no-auth-warning -a "$$VALKEY_PASSWORD" ping']
       interval: 10s
       timeout: 5s
       retries: 5

@@ -126,12 +126,38 @@ validation. Clone TIM and build the image before starting this service:
 - Navigate to the TIM directory.
 - Build the image with `docker build -t tim .`
 
+The API Dockerfiles use Docker Hardened Images. Authenticate to the DHI
+registry before building either image:
+
+```sh
+docker login dhi.io
+```
+
+The development image includes a shell; the production runtime image does not.
+For the GitHub Actions image build, configure these repository Actions secrets:
+
+| Secret | Value | Where to find it |
+| --- | --- | --- |
+| `DOCKER_USERNAME` | Docker ID | Sign in to [Docker Hub](https://hub.docker.com/) and find your username in your account profile. |
+| `DOCKER_TOKEN` | Docker personal access token | In Docker account settings, open **Personal access tokens** and select **Generate new token**. Use read-only access for public repositories. |
+
+Add these values under the GitHub repository's **Settings → Secrets and
+variables → Actions**. Docker shows the token only when it is created.
+
+The workflow logs in to `dhi.io` before building `Dockerfile.dev` and uses a
+separate login to publish the resulting image to GitHub Container Registry.
+
 For local development, use the dev compose file:
 
 ```sh
 cd api
-docker compose -f docker-compose.dev.yml up --build
+VALKEY_PASSWORD='<PASSWORD_HERE>' docker compose -f docker-compose.dev.yml up --build -d
 ```
+
+Replace `<PASSWORD_HERE>` with a local development password. Compose
+passes it to both the API and Valkey. Valkey uses its `default` user; the API
+can authenticate with the password alone. Provide the password when running
+other Compose commands, including `down`.
 
 This starts:
 
@@ -198,7 +224,7 @@ order. `chatJwt` is used here because it is first in `development.env`.
 To stop the local stack:
 
 ```sh
-docker compose -f docker-compose.dev.yml down
+VALKEY_PASSWORD='<PASSWORD_HERE>' docker compose -f docker-compose.dev.yml down
 ```
 
 ---
@@ -557,11 +583,24 @@ option.
 ### Production Docker Compose
 
 The production Docker Compose configuration is `api/docker-compose.yml`. From
-the `api` directory, build and start it with:
+the `api` directory, provide the Valkey password and build and start it with:
 
 ```sh
+export VALKEY_PASSWORD='<valkey-password>'
 docker compose -f docker-compose.yml up --build -d
 ```
+
+Use a strong password from your deployment platform's secret manager. Do not
+commit it to `api/config/production.env`. The API and Valkey use the same
+password, and Valkey authenticates as its `default` user.
+
+The API container runs with a read-only root filesystem. Valkey GLIDE requires a
+writable `/tmp` directory for its Unix sockets, so Compose mounts a 16 MB tmpfs
+there.
+
+When deploying without this Compose file, configure the read-only root
+filesystem and a writable `/tmp` separately, with permissions for the container
+user.
 
 ### Networking and ingress
 

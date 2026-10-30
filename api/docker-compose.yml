@@ -4,6 +4,12 @@ services:
   api:
     container_name: buerokratt-notification-node
     platform: linux/amd64
+    # Keep the container's root filesystem read-only.
+    read_only: true
+    # Valkey GLIDE needs writable temporary storage for its Unix sockets.
+    # Allow temporary files for all users, disable execution, privilege escalation and devices, and limit storage to 16 MB.
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid,nodev,size=16m
     build:
       context: .
       dockerfile: Dockerfile
@@ -13,6 +19,7 @@ services:
       - ./config/production.env
     environment:
       RABBITMQ_URL: amqp://rabbitmq:5672?heartbeat=30
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:?VALKEY_PASSWORD must be set}
     depends_on:
       rabbitmq:
         condition: service_healthy
