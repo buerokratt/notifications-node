@@ -1,6 +1,6 @@
 {
   "name": "@buerokratt-ria/notifications",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Framework-agnostic browser client and React bindings for Buerokratt notifications",
   "license": "ISC",
   "type": "module",
@@ -92,7 +92,7 @@
     "vitest": "^4.0.18"
   },
   "engines": {
-    "node": "^24.16.0",
+    "node": "^24.22.1",
     "pnpm": "^10.13.1"
   },
   "dependencies": {

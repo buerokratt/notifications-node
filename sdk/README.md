@@ -132,7 +132,23 @@ with a JavaScript content type, and do not redirect the worker request to the SP
 the worker is registered from the web root with the default scope, it controls the root scope. A
 restrictive `Service-Worker-Allowed` response header can cause registration to fail.
 
-The default worker displays the API payload's non-empty `notification.title` and `notification.body`.
+The default worker expects a `notification` object with `title`, `body`, and an `event` object with
+`type` and `uuid`. For each push, it sends `{ type: 'WEB_PUSH', event: { type, uuid } }` to every
+open window client, including uncontrolled clients, then displays a browser notification using the
+title and body. It leaves `silent` unset, so notification sound and vibration follow browser and OS
+defaults. This worker message is separate from the SDK's SSE event subscriptions. Listen for it with
+the Service Worker API:
+
+```ts
+navigator.serviceWorker.addEventListener(
+  'message',
+  (message: MessageEvent<{ type: 'WEB_PUSH'; event: { type: string; uuid: string } }>) => {
+    if (message.data.type !== 'WEB_PUSH') return;
+    console.info('Push event:', message.data.event.type, message.data.event.uuid);
+  },
+);
+```
+
 Custom worker behavior is a future extension point; interoperability with replacement workers is not
 part of phase one.
 
@@ -414,9 +430,10 @@ Application error monitoring should therefore observe both connection state and 
 Web Push permission denial and unsupported browsers resolve normally from `enableWebPush()`. Invalid
 VAPID configuration fails during client creation, while an unusable API URL can fail when `connect()`
 constructs the endpoint. Unexpected worker registration or subscription failures reject the enablement
-promise. The default worker displays title and body only. It does not implement notification actions,
-icons, badges, custom data, background synchronization, or click navigation; the API payload does not
-provide destination data for a `notificationclick` handler.
+promise. The default worker's push-message behavior is described in the service worker section above.
+The displayed notification does not include custom `data`, actions, icons, or badges, and the worker
+does not implement background synchronization or click navigation. The API payload does not provide
+destination data for a `notificationclick` handler.
 
 ## Using the core client without React
 

@@ -8,6 +8,7 @@ import { AppType } from './enums';
 import { EventBusType } from './event/enums';
 import { EventModule } from './event/event.module';
 import { HealthModule } from './health/health.module';
+import { LifecycleModule } from './lifecycle/lifecycle.module';
 import { PrivateNotificationsModule } from './private-notifications/private-notifications.module';
 import { PublicNotificationsModule } from './public-notifications/public-notifications.module';
 import { TimModule } from './tim/tim.module';
@@ -24,6 +25,7 @@ export class AppModule {
         }),
         ConfigModule.forFeature(appConfigFactory),
         HealthModule,
+        LifecycleModule.register({ workerEnabled: appType === AppType.Public }),
         TimModule,
         ...(appType === AppType.Public
           ? [EventModule.forRoot({ type: EventBusType.RabbitMQ }), PublicNotificationsModule]

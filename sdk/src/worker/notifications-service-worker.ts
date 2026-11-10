@@ -3,29 +3,26 @@
 interface WebPushPayload {
   readonly notification: {
     readonly body: string;
+    readonly event: {
+      readonly type: string;
+      readonly uuid: string;
+    };
     readonly title: string;
   };
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const parseWebPushPayload = (data: PushMessageData): WebPushPayload | undefined => {
   try {
-    const value = data.json() as unknown;
-
-    if (!isRecord(value) || !isRecord(value.notification)) return;
-
-    const { body, title } = value.notification;
-
-    if (typeof title !== 'string' || title.trim() === '' || typeof body !== 'string' || body.trim() === '') {
-      return;
-    }
+    const value = data.json() as WebPushPayload;
 
     return {
       notification: {
-        body: body.trim(),
-        title: title.trim(),
+        title: value.notification.title.trim(),
+        body: value.notification.body.trim(),
+        event: {
+          type: value.notification.event.type.trim(),
+          uuid: value.notification.event.uuid.trim(),
+        },
       },
     };
   } catch {
@@ -35,15 +32,33 @@ const parseWebPushPayload = (data: PushMessageData): WebPushPayload | undefined 
 
 const serviceWorker = self as unknown as ServiceWorkerGlobalScope;
 
-serviceWorker.addEventListener('push', (event: PushEvent) => {
-  event.waitUntil(
+serviceWorker.addEventListener('push', (pushEvent: PushEvent) => {
+  pushEvent.waitUntil(
     (async () => {
-      if (!event.data) return;
+      if (!pushEvent.data) {
+        return;
+      }
 
-      const payload = parseWebPushPayload(event.data);
-      if (!payload) return;
+      const payload = parseWebPushPayload(pushEvent.data);
+      if (!payload) {
+        return;
+      }
 
       const { body, title } = payload.notification;
+      const clients = await serviceWorker.clients.matchAll({
+        includeUncontrolled: true,
+        type: 'window',
+      });
+      for (const client of clients) {
+        client.postMessage({
+          type: 'WEB_PUSH',
+          event: {
+            uuid: payload.notification.event.uuid,
+            type: payload.notification.event.type,
+          },
+        });
+      }
+
       await serviceWorker.registration.showNotification(title, { body });
     })(),
   );

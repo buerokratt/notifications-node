@@ -7,6 +7,9 @@ type PushListener = (event: PushEvent) => void;
 describe('notifications service worker', () => {
   let pushListener: PushListener;
   let showNotification: ReturnType<typeof vi.fn>;
+  let matchAllClients: ReturnType<typeof vi.fn>;
+  let postMessage: ReturnType<typeof vi.fn>;
+  let secondPostMessage: ReturnType<typeof vi.fn>;
 
   const pushData = (value: unknown): PushMessageData =>
     ({
@@ -30,11 +33,15 @@ describe('notifications service worker', () => {
   beforeEach(async () => {
     vi.resetModules();
     showNotification = vi.fn(() => Promise.resolve());
+    postMessage = vi.fn();
+    secondPostMessage = vi.fn();
+    matchAllClients = vi.fn(() => Promise.resolve([{ postMessage }, { postMessage: secondPostMessage }]));
     const addEventListener = vi.fn((type: string, listener: PushListener) => {
       if (type === 'push') pushListener = listener;
     });
     vi.stubGlobal('self', {
       addEventListener,
+      clients: { matchAll: matchAllClients },
       registration: { showNotification },
     });
 
@@ -52,6 +59,7 @@ describe('notifications service worker', () => {
       pushData({
         notification: {
           body: '  You have a message.  ',
+          event: { type: '  message.created  ', uuid: '  event-uuid  ' },
           title: '  New notification  ',
         },
       }),
@@ -60,6 +68,15 @@ describe('notifications service worker', () => {
     await completion;
 
     expect(waitUntil).toHaveBeenCalledOnce();
+    expect(matchAllClients).toHaveBeenCalledWith({ includeUncontrolled: true, type: 'window' });
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'WEB_PUSH',
+      event: { type: 'message.created', uuid: 'event-uuid' },
+    });
+    expect(secondPostMessage).toHaveBeenCalledWith({
+      type: 'WEB_PUSH',
+      event: { type: 'message.created', uuid: 'event-uuid' },
+    });
     expect(showNotification).toHaveBeenCalledWith('New notification', { body: 'You have a message.' });
   });
 
@@ -69,6 +86,26 @@ describe('notifications service worker', () => {
     await completion;
 
     expect(showNotification).not.toHaveBeenCalled();
+  });
+
+  it('forwards an empty event name after trimming without rejecting the push', async () => {
+    const { completion } = dispatchPush(
+      pushData({
+        notification: {
+          body: 'Body',
+          event: { type: '   ', uuid: ' event-uuid ' },
+          title: 'Title',
+        },
+      }),
+    );
+
+    await completion;
+
+    expect(postMessage).toHaveBeenCalledWith({
+      type: 'WEB_PUSH',
+      event: { type: '', uuid: 'event-uuid' },
+    });
+    expect(showNotification).toHaveBeenCalledWith('Title', { body: 'Body' });
   });
 
   it('ignores push data that cannot be decoded as JSON', async () => {
@@ -90,12 +127,19 @@ describe('notifications service worker', () => {
     ['scalar root', 'notification'],
     ['missing notification', {}],
     ['non-object notification', { notification: 'invalid' }],
-    ['missing title', { notification: { body: 'Body' } }],
-    ['non-string title', { notification: { body: 'Body', title: 123 } }],
-    ['blank title', { notification: { body: 'Body', title: '   ' } }],
-    ['missing body', { notification: { title: 'Title' } }],
-    ['non-string body', { notification: { body: 123, title: 'Title' } }],
-    ['blank body', { notification: { body: '   ', title: 'Title' } }],
+    ['missing event', { notification: { body: 'Body', title: 'Title' } }],
+    ['missing event type', { notification: { body: 'Body', event: { uuid: 'event-uuid' }, title: 'Title' } }],
+    ['missing event UUID', { notification: { body: 'Body', event: { type: 'created' }, title: 'Title' } }],
+    ['missing title', { notification: { body: 'Body', event: { type: 'created', uuid: 'event-uuid' } } }],
+    [
+      'non-string title',
+      { notification: { body: 'Body', event: { type: 'created', uuid: 'event-uuid' }, title: 123 } },
+    ],
+    ['missing body', { notification: { event: { type: 'created', uuid: 'event-uuid' }, title: 'Title' } }],
+    [
+      'non-string body',
+      { notification: { body: 123, event: { type: 'created', uuid: 'event-uuid' }, title: 'Title' } },
+    ],
   ])('ignores %s', async (caseName, value) => {
     void caseName;
     const { completion } = dispatchPush(pushData(value));
@@ -109,7 +153,13 @@ describe('notifications service worker', () => {
     const failure = new Error('display failed');
     showNotification.mockRejectedValueOnce(failure);
     const { completion } = dispatchPush(
-      pushData({ notification: { body: 'You have a message.', title: 'New notification' } }),
+      pushData({
+        notification: {
+          body: 'You have a message.',
+          event: { type: 'message.created', uuid: 'event-uuid' },
+          title: 'New notification',
+        },
+      }),
     );
 
     await expect(completion).rejects.toBe(failure);

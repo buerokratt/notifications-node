@@ -41,7 +41,10 @@ describe('HealthController (e2e)', () => {
         .overrideProvider(RabbitmqService)
         .useValue({ isHealthy: rabbitmqIsHealthyMock, subscribe: subscribeMock, subscribeWebPush: vi.fn() })
         .overrideProvider(ValkeyService)
-        .useValue({ isHealthy: valkeyIsHealthyMock })
+        .useValue({
+          getSortedSetMembersByScore: vi.fn().mockResolvedValue([]),
+          isHealthy: valkeyIsHealthyMock,
+        })
         .compile();
 
       app = moduleFixture.createNestApplication();

@@ -204,7 +204,7 @@ describe('WebPushService (e2e)', () => {
       headers: {},
     });
     const delivery = {
-      eventUuid: EVENT_UUID,
+      event: { type: 'user.notification', uuid: EVENT_UUID },
       target: { recipient: NotificationRecipient.User as const, recipientUuid: USER_UUID },
       title: 'User notification',
       body: 'Only the matching user should receive this.',
@@ -221,6 +221,7 @@ describe('WebPushService (e2e)', () => {
         notification: {
           title: delivery.title,
           body: delivery.body,
+          event: delivery.event,
         },
       }),
       expect.objectContaining({ TTL: delivery.ttl }),
@@ -240,7 +241,7 @@ describe('WebPushService (e2e)', () => {
     );
 
     await webPushService.deliver({
-      eventUuid: SECOND_EVENT_UUID,
+      event: { type: 'user.notification', uuid: SECOND_EVENT_UUID },
       target: { recipient: NotificationRecipient.User, recipientUuid: USER_UUID },
       title: 'Expired subscription',
       body: 'This delivery removes stale state.',

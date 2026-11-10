@@ -25,7 +25,10 @@ export class WebPushEventConsumerService implements OnApplicationBootstrap {
 
     await this.webPushService.deliver({
       body: event.webPush.body,
-      eventUuid: event.eventUuid,
+      event: {
+        type: event.type,
+        uuid: event.eventUuid,
+      },
       target,
       title: event.webPush.title,
       ttl: event.webPush.ttl,

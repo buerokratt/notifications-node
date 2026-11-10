@@ -49,6 +49,10 @@ export class ValkeyService implements OnModuleInit, BeforeApplicationShutdown {
     this.glideClient = undefined;
   }
 
+  public get isInitialized(): boolean {
+    return !!this.glideClient;
+  }
+
   /**
    * Returns the current Valkey connection health status.
    */
@@ -154,6 +158,24 @@ export class ValkeyService implements OnModuleInit, BeforeApplicationShutdown {
       isInclusive: true,
     });
     const members = await this.client.zrange(key, { start: 0, end: -1 });
+    return members.map((member) => member.toString());
+  }
+
+  /**
+   * Reads a bounded set of potentially due sorted-set members without pruning
+   * or otherwise changing Valkey state. Callers must revalidate due status
+   * atomically before acting on a candidate.
+   */
+  public async getSortedSetMembersByScore(key: string, maxScore: number, limit: number): Promise<string[]> {
+    if (!Number.isInteger(limit) || limit < 1) return [];
+
+    const members = await this.client.zrange(key, {
+      start: InfBoundary.NegativeInfinity,
+      end: { value: maxScore, isInclusive: true },
+      type: 'byScore',
+      limit: { offset: 0, count: limit },
+    });
+
     return members.map((member) => member.toString());
   }
 

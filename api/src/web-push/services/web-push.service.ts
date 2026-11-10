@@ -85,13 +85,17 @@ export class WebPushService implements OnModuleInit {
       notification: {
         title: delivery.title,
         body: delivery.body,
+        event: {
+          type: delivery.event.type,
+          uuid: delivery.event.uuid,
+        },
       },
     });
     const deliveryClaimTtlSeconds = delivery.ttl ?? WEB_PUSH_DELIVERY_CLAIM_TTL_SECONDS_MIN;
 
     await this.forEachConcurrently(subscriptionIds, async (subscriptionId) => {
       const claimed = await this.valkeyService.setIfAbsent(
-        WEB_PUSH_VALKEY_KEYS.delivery.claim(delivery.eventUuid, subscriptionId),
+        WEB_PUSH_VALKEY_KEYS.delivery.claim(delivery.event.uuid, subscriptionId),
         '1',
         deliveryClaimTtlSeconds,
       );
@@ -109,7 +113,7 @@ export class WebPushService implements OnModuleInit {
           timeout: this.config.requestTimeoutMs,
         });
         this.logger.log(
-          `Delivered Web Push notification. Event: ${delivery.eventUuid}, subscription: ${subscriptionId}`,
+          `Delivered Web Push notification. Event: ${delivery.event.uuid}, subscription: ${subscriptionId}`,
         );
       } catch (error) {
         if (error instanceof WebPushError && [HttpStatus.NOT_FOUND, HttpStatus.GONE].includes(error.statusCode)) {
